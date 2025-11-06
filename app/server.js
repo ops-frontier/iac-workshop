@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const path = require('path');
 const crypto = require('crypto');
 
+const { logger, createUserLogger } = require('./logger');
 const db = require('./database');
 const workspaceManager = require('./workspace-manager');
 
@@ -62,14 +63,18 @@ passport.use(new GitHubStrategy({
   callbackURL: CALLBACK_URL
 },
 function(accessToken, refreshToken, profile, done) {
+  const userLogger = createUserLogger(profile.username);
+  userLogger.info({ profileId: profile.id }, 'GitHub OAuth callback');
+  
   const user = {
-    id: profile.id,
+    id: String(profile.id), // Ensure ID is string
     username: profile.username,
     displayName: profile.displayName,
     email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
     avatar: profile.photos && profile.photos[0] ? profile.photos[0].value : null
   };
   
+  userLogger.debug({ user }, 'Storing user');
   // Store or update user in database
   db.upsertUser(user);
   
@@ -78,11 +83,20 @@ function(accessToken, refreshToken, profile, done) {
 ));
 
 passport.serializeUser((user, done) => {
-  done(null, user.id);
+  logger.debug({ userId: user.id }, 'Serializing user');
+  // Ensure ID is stored as string
+  done(null, String(user.id));
 });
 
 passport.deserializeUser((id, done) => {
-  const user = db.getUserById(id);
+  logger.debug({ userId: id }, 'Deserializing user');
+  // Ensure ID is queried as string
+  const user = db.getUserById(String(id));
+  if (user) {
+    logger.debug({ username: user.username }, 'User deserialized');
+  } else {
+    logger.warn({ userId: id }, 'User not found during deserialization');
+  }
   done(null, user);
 });
 
@@ -92,12 +106,40 @@ app.use(passport.session());
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Middleware to check authentication
+// Middleware to check authentication for pages
 function ensureAuthenticated(req, res, next) {
+  const sessionLogger = logger.child({ 
+    sessionId: req.sessionID,
+    authenticated: req.isAuthenticated() 
+  });
+  
   if (req.isAuthenticated()) {
+    sessionLogger.debug({ user: req.user.username }, 'Authentication successful');
     return next();
   }
+  
+  sessionLogger.info('Authentication failed, redirecting to /');
   res.redirect('/');
+}
+
+// Middleware to check authentication for API endpoints
+function ensureAuthenticatedAPI(req, res, next) {
+  const sessionLogger = logger.child({ 
+    sessionId: req.sessionID,
+    authenticated: req.isAuthenticated() 
+  });
+  
+  if (req.isAuthenticated()) {
+    sessionLogger.debug({ user: req.user.username }, 'API authentication successful');
+    return next();
+  }
+  
+  sessionLogger.info('API authentication failed, returning 401');
+  res.status(401).json({ 
+    error: 'Unauthorized',
+    message: 'Please log in to continue',
+    redirect: '/'
+  });
 }
 
 // Routes
@@ -117,8 +159,7 @@ app.get('/auth/github', (req, res, next) => {
   const state = crypto.randomBytes(32).toString('hex');
   req.session.oauthState = state;
   
-  console.log('OAuth initiated - State:', state);
-  console.log('Session ID:', req.sessionID);
+  logger.info({ sessionId: req.sessionID, state }, 'OAuth initiated');
   
   passport.authenticate('github', {
     scope: ['user:email'],
@@ -128,13 +169,17 @@ app.get('/auth/github', (req, res, next) => {
 
 app.get('/auth/github/callback',
   (req, res, next) => {
-    console.log('OAuth callback - Query state:', req.query.state);
-    console.log('Session state:', req.session.oauthState);
-    console.log('Session ID:', req.sessionID);
+    const callbackLogger = logger.child({ 
+      sessionId: req.sessionID,
+      queryState: req.query.state,
+      sessionState: req.session.oauthState
+    });
+    
+    callbackLogger.debug('OAuth callback received');
     
     // Verify state parameter
     if (req.query.state !== req.session.oauthState) {
-      console.error('State mismatch! Query:', req.query.state, 'Session:', req.session.oauthState);
+      callbackLogger.error('State mismatch in OAuth callback');
       return res.status(403).send('Invalid state parameter. Please try logging in again.');
     }
     delete req.session.oauthState;
@@ -161,24 +206,30 @@ app.get('/dashboard', ensureAuthenticated, (req, res) => {
 // API Routes
 
 // Get user's workspaces
-app.get('/api/workspaces', ensureAuthenticated, (req, res) => {
+app.get('/api/workspaces', ensureAuthenticatedAPI, (req, res) => {
   const workspaces = db.getUserWorkspaces(req.user.id);
   res.json(workspaces);
 });
 
 // Create new workspace
-app.post('/api/workspaces', ensureAuthenticated, async (req, res) => {
+app.post('/api/workspaces', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
   try {
     const { name, repoUrl, envVars } = req.body;
     
     if (!name || !repoUrl) {
+      userLogger.warn({ name, repoUrl }, 'Invalid workspace creation request');
       return res.status(400).json({ error: 'Name and repository URL are required' });
     }
     
     // Validate workspace name
     if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      userLogger.warn({ name }, 'Invalid workspace name format');
       return res.status(400).json({ error: 'Invalid workspace name. Use only alphanumeric characters, hyphens, and underscores.' });
     }
+    
+    userLogger.info({ workspace: name, repoUrl }, 'Creating workspace');
     
     // Create workspace
     const workspace = await workspaceManager.createWorkspace(
@@ -197,15 +248,16 @@ app.post('/api/workspaces', ensureAuthenticated, async (req, res) => {
       status: 'running'
     });
     
+    userLogger.info({ workspace: name, containerId: workspace.containerId }, 'Workspace created successfully');
     res.json(workspace);
   } catch (error) {
-    console.error('Error creating workspace:', error);
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error creating workspace');
     res.status(500).json({ error: error.message });
   }
 });
 
 // Get workspace details
-app.get('/api/workspaces/:id', ensureAuthenticated, (req, res) => {
+app.get('/api/workspaces/:id', ensureAuthenticatedAPI, (req, res) => {
   const workspace = db.getWorkspace(req.params.id);
   
   if (!workspace || workspace.user_id !== req.user.id) {
@@ -216,13 +268,18 @@ app.get('/api/workspaces/:id', ensureAuthenticated, (req, res) => {
 });
 
 // Delete workspace
-app.delete('/api/workspaces/:id', ensureAuthenticated, async (req, res) => {
+app.delete('/api/workspaces/:id', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
   try {
     const workspace = db.getWorkspace(req.params.id);
     
     if (!workspace || workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
       return res.status(404).json({ error: 'Workspace not found' });
     }
+    
+    userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Deleting workspace');
     
     // Stop and remove container
     await workspaceManager.deleteWorkspace(workspace.container_id);
@@ -230,49 +287,73 @@ app.delete('/api/workspaces/:id', ensureAuthenticated, async (req, res) => {
     // Remove from database
     db.deleteWorkspace(req.params.id);
     
+    userLogger.info({ workspace: workspace.name }, 'Workspace deleted successfully');
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting workspace:', error);
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error deleting workspace');
     res.status(500).json({ error: error.message });
   }
 });
 
 // Start workspace
-app.post('/api/workspaces/:id/start', ensureAuthenticated, async (req, res) => {
+app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
   try {
     const workspace = db.getWorkspace(req.params.id);
     
     if (!workspace || workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
       return res.status(404).json({ error: 'Workspace not found' });
     }
+    
+    userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Starting workspace');
     
     await workspaceManager.startWorkspace(workspace.container_id);
     db.updateWorkspaceStatus(req.params.id, 'running');
     
+    userLogger.info({ workspace: workspace.name }, 'Workspace started successfully');
     res.json({ success: true });
   } catch (error) {
-    console.error('Error starting workspace:', error);
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error starting workspace');
     res.status(500).json({ error: error.message });
   }
 });
 
 // Stop workspace
-app.post('/api/workspaces/:id/stop', ensureAuthenticated, async (req, res) => {
+app.post('/api/workspaces/:id/stop', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
   try {
     const workspace = db.getWorkspace(req.params.id);
     
     if (!workspace || workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
       return res.status(404).json({ error: 'Workspace not found' });
     }
+    
+    userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Stopping workspace');
     
     await workspaceManager.stopWorkspace(workspace.container_id);
     db.updateWorkspaceStatus(req.params.id, 'stopped');
     
+    userLogger.info({ workspace: workspace.name }, 'Workspace stopped successfully');
     res.json({ success: true });
   } catch (error) {
-    console.error('Error stopping workspace:', error);
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error stopping workspace');
     res.status(500).json({ error: error.message });
   }
+});
+
+// Get current user info API
+app.get('/api/user', ensureAuthenticatedAPI, (req, res) => {
+  res.json({
+    id: req.user.id,
+    username: req.user.username,
+    displayName: req.user.displayName,
+    email: req.user.email,
+    avatar: req.user.avatar
+  });
 });
 
 // Health check
@@ -285,6 +366,5 @@ db.initialize();
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Pseudo CodeSpaces server running on port ${PORT}`);
-  console.log(`Domain: ${DOMAIN}`);
+  logger.info({ port: PORT, domain: DOMAIN }, 'Pseudo CodeSpaces server started');
 });

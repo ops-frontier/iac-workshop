@@ -273,14 +273,77 @@
     </div>
 
     <script>
-        // Load workspaces on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            loadWorkspaces();
+        let currentUser = null;
+        
+        // Common error handler for API responses
+        async function handleAPIResponse(response) {
+            if (response.ok) {
+                return response;
+            }
+            
+            if (response.status === 401) {
+                const data = await response.json();
+                alert(data.message || 'セッションが切れました。再度ログインしてください。');
+                // Alert is synchronous, so this will execute after user clicks OK
+                setTimeout(() => {
+                    window.location.href = '/';
+                }, 0);
+                throw new Error('Unauthorized');
+            }
+            
+            return response;
+        }
+        
+        // Load user info and workspaces on page load
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserInfo();
+            await loadWorkspaces();
         });
+        
+        async function loadUserInfo() {
+            try {
+                const response = await fetch('/api/user', {
+                    credentials: 'include'
+                });
+                
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        window.location.href = '/';
+                        return;
+                    }
+                    throw new Error('Failed to load user info');
+                }
+                
+                currentUser = await response.json();
+                
+                // Update UI with user info
+                document.getElementById('userName').textContent = currentUser.displayName || currentUser.username;
+                if (currentUser.avatar) {
+                    document.getElementById('userAvatar').src = currentUser.avatar;
+                }
+            } catch (error) {
+                console.error('Error loading user info:', error);
+            }
+        }
 
         async function loadWorkspaces() {
             try {
-                const response = await fetch('/api/workspaces');
+                const response = await fetch('/api/workspaces', {
+                    credentials: 'include'
+                });
+                
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        const data = await response.json();
+                        alert(data.message || 'セッションが切れました。再度ログインしてください。');
+                        setTimeout(() => {
+                            window.location.href = '/';
+                        }, 0);
+                        return;
+                    }
+                    throw new Error('Failed to load workspaces');
+                }
+                
                 const workspaces = await response.json();
                 
                 const container = document.getElementById('workspacesList');
@@ -297,7 +360,7 @@
                         <span class="workspace-status status-${ws.status}">${ws.status}</span>
                         <div class="workspace-actions">
                             ${ws.status === 'running' ? `
-                                <a href="/${getUsernameFromUrl()}/workspaces/${ws.name}/" target="_blank" class="btn btn-small">開く</a>
+                                <a href="/${currentUser.username}/workspaces/${ws.name}/" target="_blank" class="btn btn-small">開く</a>
                                 <button class="btn btn-small btn-danger" onclick="stopWorkspace(${ws.id})">停止</button>
                             ` : `
                                 <button class="btn btn-small" onclick="startWorkspace(${ws.id})">起動</button>
@@ -345,6 +408,7 @@
                     headers: {
                         'Content-Type': 'application/json'
                     },
+                    credentials: 'include',
                     body: JSON.stringify({ name, repoUrl, envVars })
                 });
                 
@@ -352,13 +416,23 @@
                     closeModal();
                     loadWorkspaces();
                     alert('ワークスペースを作成しました');
+                } else if (response.status === 401) {
+                    const data = await response.json();
+                    alert(data.message || 'セッションが切れました。再度ログインしてください。');
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 0);
+                    return; // Exit early to prevent further execution
                 } else {
                     const error = await response.json();
                     alert('エラー: ' + error.error);
                 }
             } catch (error) {
-                console.error('Error creating workspace:', error);
-                alert('ワークスペースの作成に失敗しました');
+                // Don't show error if it's just an Unauthorized redirect
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error creating workspace:', error);
+                    alert('ワークスペースの作成に失敗しました');
+                }
             }
         }
 
@@ -369,8 +443,11 @@
             
             try {
                 const response = await fetch(`/api/workspaces/${id}`, {
-                    method: 'DELETE'
+                    method: 'DELETE',
+                    credentials: 'include'
                 });
+                
+                await handleAPIResponse(response);
                 
                 if (response.ok) {
                     loadWorkspaces();
@@ -379,16 +456,21 @@
                     alert('削除に失敗しました');
                 }
             } catch (error) {
-                console.error('Error deleting workspace:', error);
-                alert('削除に失敗しました');
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error deleting workspace:', error);
+                    alert('削除に失敗しました');
+                }
             }
         }
 
         async function startWorkspace(id) {
             try {
                 const response = await fetch(`/api/workspaces/${id}/start`, {
-                    method: 'POST'
+                    method: 'POST',
+                    credentials: 'include'
                 });
+                
+                await handleAPIResponse(response);
                 
                 if (response.ok) {
                     loadWorkspaces();
@@ -397,16 +479,21 @@
                     alert('起動に失敗しました');
                 }
             } catch (error) {
-                console.error('Error starting workspace:', error);
-                alert('起動に失敗しました');
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error starting workspace:', error);
+                    alert('起動に失敗しました');
+                }
             }
         }
 
         async function stopWorkspace(id) {
             try {
                 const response = await fetch(`/api/workspaces/${id}/stop`, {
-                    method: 'POST'
+                    method: 'POST',
+                    credentials: 'include'
                 });
+                
+                await handleAPIResponse(response);
                 
                 if (response.ok) {
                     loadWorkspaces();
@@ -415,8 +502,10 @@
                     alert('停止に失敗しました');
                 }
             } catch (error) {
-                console.error('Error stopping workspace:', error);
-                alert('停止に失敗しました');
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error stopping workspace:', error);
+                    alert('停止に失敗しました');
+                }
             }
         }
 
@@ -424,12 +513,6 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
-        }
-
-        function getUsernameFromUrl() {
-            // This would be populated from session/user data
-            // For now, we'll extract it from the current user's data
-            return window.location.pathname.split('/')[1] || 'user';
         }
     </script>
 </body>
