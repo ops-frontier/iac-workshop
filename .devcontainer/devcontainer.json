@@ -48,7 +48,8 @@
     "TF_VAR_ssh_public_key": "${localEnv:TF_VAR_SSH_PUBLIC_KEY}${localEnv:TF_VAR_ssh_public_key}",
     "TF_VAR_domain": "${localEnv:TF_VAR_DOMAIN}${localEnv:TF_VAR_domain}",
     "TF_VAR_github_client_id": "${localEnv:TF_VAR_GITHUB_CLIENT_ID}${localEnv:TF_VAR_github_client_id}",
-    "TF_VAR_github_client_secret": "${localEnv:TF_VAR_GITHUB_CLIENT_SECRET}${localEnv:TF_VAR_github_client_secret}"
+    "TF_VAR_github_client_secret": "${localEnv:TF_VAR_GITHUB_CLIENT_SECRET}${localEnv:TF_VAR_github_client_secret}",
+    "DEPLOYER_EMAIL": "${localEnv:DEPLOYER_EMAIL}"
   },
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"

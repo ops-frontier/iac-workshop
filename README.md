@@ -90,6 +90,7 @@ TF_VAR_SSH_PUBLIC_KEY=<~/.ssh/id_rsa.pubの内容>
 TF_VAR_DOMAIN=<あなたのドメイン>
 TF_VAR_GITHUB_CLIENT_ID=<GitHub OAuth AppのClient ID>
 TF_VAR_GITHUB_CLIENT_SECRET=<GitHub OAuth AppのClient Secret>
+DEPLOYER_EMAIL=<SSL証明書の期限切れ警告メールを受け取るメールアドレス>
 ```
 
 Dev Containerが起動すると、これらは自動的にTerraformが認識できる形式に変換されます。
@@ -112,6 +113,10 @@ export TF_VAR_domain="your-domain.com"
 # GitHub OAuth
 export TF_VAR_github_client_id="your-github-client-id"
 export TF_VAR_github_client_secret="your-github-client-secret"
+
+# SSL証明書の期限切れ警告メールアドレス（オプション）
+# 未設定の場合は admin@your-domain.com が使用されます
+export DEPLOYER_EMAIL="your-email@example.com"
 ```
 
 ### 4. Terraformでインフラをデプロイ
@@ -335,14 +340,46 @@ Error: API authentication failed
 
 ## メンテナンス
 
-### SSL証明書の更新
+### SSL証明書の自動更新
 
-証明書は自動的に更新されます（7日ごとにcronで実行）。手動で更新する場合：
+SSL証明書は**毎日午前3時に自動的にチェック・更新**されます。Let's Encryptは証明書の有効期限が30日未満の場合に自動更新します。
+
+更新処理には以下が含まれます：
+- Certbotによる証明書の更新チェック
+- 更新された証明書のアプリディレクトリへのコピー
+- Nginxコンテナのリロード
+- 更新ログの記録 (`/var/log/certbot-renewal.log`)
+
+手動で証明書を更新する場合：
+
+```bash
+ssh ubuntu@your-server
+sudo /usr/local/bin/renew-cert.sh your-domain.com
+```
+
+または、certbotコマンドを直接実行：
 
 ```bash
 ssh ubuntu@your-server
 sudo certbot renew
+sudo cp /etc/letsencrypt/live/your-domain.com/*.pem /opt/pseudo-codespaces/ssl/
 docker exec nginx nginx -s reload
+```
+
+### 証明書更新の確認
+
+更新ログを確認：
+
+```bash
+ssh ubuntu@your-server
+sudo tail -f /var/log/certbot-renewal.log
+```
+
+証明書の有効期限を確認：
+
+```bash
+ssh ubuntu@your-server
+sudo certbot certificates
 ```
 
 ### バックアップ

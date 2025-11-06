@@ -7,21 +7,13 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, admin, docker
     shell: /bin/bash
-    lock_passwd: false
+    lock_passwd: true
     ssh_authorized_keys:
       - ${ssh_public_key}
 
-# パスワード設定（平文で指定可能）
-chpasswd:
-  expire: false
-  users:
-    - name: ubuntu
-      password: TempPassword123!
-      type: text
-
-# SSH設定
-ssh_pwauth: true
-disable_root: false
+# SSH設定（セキュリティ強化: パスワード認証無効、root接続無効）
+ssh_pwauth: false
+disable_root: true
 
 # パッケージ更新
 package_update: true

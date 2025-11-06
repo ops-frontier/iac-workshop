@@ -3,7 +3,7 @@
 ## 問題
 
 1. さくらのクラウドの公式cloud-init Ubuntuイメージは`disk_edit_parameter`非対応
-2. 起動時にパケットフィルタが設定されているとIPアドレスが付与されない
+2. パケットフィルタでDHCP（67/UDP, 68/UDP）を許可しないとIPアドレスが付与されない
 3. Ubuntu 24.04ではpipでのシステムワイドインストールが禁止（PEP 668）
 
 ## さくらのクラウドの制約
@@ -15,10 +15,11 @@
    - 「パブリックアーカイブとして提供しているUbuntuなどのcloud-imgは、cloud-init専用のアーカイブとなりますので、ディスク修正は非対応」
    - `user_data`を使用する必要がある
 
-2. **起動時のパケットフィルタでIPアドレス付与失敗**
-   - サーバー作成時にパケットフィルタを設定するとIPアドレスが付与されない
-   - 起動後に手動で設定しても、再起動すると再びIPアドレスが付与されなくなる
-   - **解決策**: パケットフィルタを使わず、iptablesで制御
+2. **パケットフィルタでDHCPの許可が必須**
+   - cloud-initイメージではIPアドレスがDHCPで自動割り当て
+   - パケットフィルタで67/UDP（bootps）と68/UDP（bootpc）を許可する必要がある
+   - 参考: https://manual.sakura.ad.jp/cloud/network/packet-filter.html
+   - 「DHCP機能によりIPアドレスが割り当てられます。この場合、サーバ側でDHCPの通信に使用する67/UDP および 68/UDP の疎通が必要」
 
 3. **Ubuntu 24.04のPEP 668制限**
    - `pip3 install ansible`がエラーになる
@@ -37,7 +38,9 @@ Terraform templatefile() で変数展開
          ↓
 user_data (展開済みのcloud-init YAML)
          ↓
-Server (cloud-init実行、iptablesでファイアウォール設定)
+パケットフィルタ（DHCP許可）+ iptables（多層防御）
+         ↓
+Server (cloud-init実行、IPアドレス正常付与)
 ```
 
 ### 実装
@@ -45,34 +48,47 @@ Server (cloud-init実行、iptablesでファイアウォール設定)
 #### terraform/server.tf
 
 ```hcl
-# SSH Key resource
-resource "sakuracloud_ssh_key" "main" {
-  name       = "${var.server_name}-key"
-  public_key = var.ssh_public_key
-}
+# Packet Filter - DHCPを許可してIPアドレス付与を可能にする
+resource "sakuracloud_packet_filter" "main" {
+  name        = "${var.server_name}-filter"
+  description = "Packet filter for Pseudo CodeSpaces with DHCP support"
 
-# Disk
-resource "sakuracloud_disk" "main" {
-  name              = "${var.server_name}-disk"
-  source_archive_id = data.sakuracloud_archive.ubuntu.id
-  size              = var.disk_size
+  # DHCP (重要: cloud-initイメージでIPアドレスを取得するために必須)
+  expression {
+    protocol         = "udp"
+    destination_port = "67"
+    allow            = true
+    description      = "Allow DHCP (bootps)"
+  }
+
+  expression {
+    protocol         = "udp"
+    destination_port = "68"
+    allow            = true
+    description      = "Allow DHCP (bootpc)"
+  }
+
+  # その他のルール（ICMP, SSH, HTTP, HTTPS等）
+  # ...
+
+  expression {
+    protocol    = "ip"
+    allow       = false
+    description = "Deny all other traffic"
+  }
 }
 
 # Server
 resource "sakuracloud_server" "main" {
-  name        = var.server_name
-  core        = var.server_core
-  memory      = var.server_memory
-  description = "Pseudo CodeSpaces Server"
-
-  disks = [sakuracloud_disk.main.id]
-
-  # ✅ パケットフィルタは使用しない（IPアドレス付与の問題を回避）
+  # ...
+  
+  # ✅ パケットフィルタを適用（DHCP許可でIPアドレス付与が可能）
   network_interface {
-    upstream = "shared"
+    upstream         = "shared"
+    packet_filter_id = sakuracloud_packet_filter.main.id
   }
 
-  # ✅ user_dataでcloud-initを設定（disk_edit_parameterは非対応）
+  # ✅ user_dataでcloud-initを設定
   user_data = templatefile("${path.module}/cloud-init.yaml", {
     domain               = var.domain
     github_client_id     = var.github_client_id
@@ -297,16 +313,21 @@ EOF
    - `templatefile()`を使用してTerraform側で変数展開
    - SSH公開鍵もテンプレート変数として渡す
 
-2. **パケットフィルタは使用しない**
-   - 起動時にパケットフィルタがあるとIPアドレスが付与されない
-   - ファイアウォールはiptablesで制御
+2. **パケットフィルタでDHCPを許可**
+   - 67/UDP（bootps）と68/UDP（bootpc）を許可
+   - これによりIPアドレスが正常に付与される
+   - 参考: https://manual.sakura.ad.jp/cloud/network/packet-filter.html
+
+3. **iptablesと組み合わせて多層防御**
+   - パケットフィルタ: ネットワークレベルの第1防御層
+   - iptables: サーバー内部の第2防御層
    - `iptables-persistent`で再起動後も維持
 
-3. **パッケージはaptでインストール**
+4. **パッケージはaptでインストール**
    - Ubuntu 24.04では`pip3 install ansible`が失敗（PEP 668）
    - `packages`セクションに`ansible`を追加
 
-4. **ネットワーク設定は不要**
+5. **ネットワーク設定は不要**
    - cloud-initでネットワーク設定を明示すると問題が発生
    - Ubuntuのデフォルトdhcp設定に任せる
 
@@ -320,12 +341,14 @@ EOF
    }
    ```
 
-2. **パケットフィルタの使用**
+2. **パケットフィルタでDHCPを許可しない**
    ```hcl
    # ❌ IPアドレスが付与されない
-   network_interface {
-     upstream         = "shared"
-     packet_filter_id = sakuracloud_packet_filter.main.id
+   # 67/UDP, 68/UDPの許可が必須
+   expression {
+     protocol         = "udp"
+     destination_port = "67"
+     allow            = false  # ❌
    }
    ```
 
@@ -351,22 +374,24 @@ EOF
 最終的な構成：
 - ✅ `user_data`でcloud-init設定（`disk_edit_parameter`は使わない）
 - ✅ `templatefile()`でcloud-initスクリプトの変数を展開
-- ✅ パケットフィルタは使わず、iptablesでファイアウォール制御
+- ✅ パケットフィルタでDHCP（67/UDP, 68/UDP）を許可してIPアドレス付与
+- ✅ iptablesと組み合わせて多層防御（パケットフィルタ + iptables）
 - ✅ パッケージは`apt`でインストール（pipは使わない）
 - ✅ ネットワーク設定はUbuntuのデフォルトdhcpに任せる
 - ✅ SSH鍵はテンプレート変数として渡す
 
 この構成により：
 - cloud-initスクリプトが確実にサーバーに適用される
-- IPアドレスが正常に付与される
+- IPアドレスが正常に付与される（DHCPが正しく動作）
 - 環境変数が正しく展開される
 - パスワードとSSH鍵の両方が機能する
-- ファイアウォールが正しく動作する
+- 2層のファイアウォールで堅牢なセキュリティを実現
 - 再起動後も設定が維持される
 
 ## 参考リンク
 
 - [さくらのクラウド - ディスク修正について](https://manual.sakura.ad.jp/cloud/storage/modifydisk/about.html)
+- [さくらのクラウド - パケットフィルタ](https://manual.sakura.ad.jp/cloud/network/packet-filter.html)
 - [Qiita - さくらのクラウドでcloud-initを使う](https://qiita.com/kamaya-yuki/items/d86f0d288fed16bb0840)
 - [Terraform Sakura Cloud Provider - Server](https://registry.terraform.io/providers/sacloud/sakuracloud/latest/docs/resources/server)
 - [cloud-init Documentation](https://cloudinit.readthedocs.io/)

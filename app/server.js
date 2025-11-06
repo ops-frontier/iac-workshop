@@ -17,6 +17,9 @@ const PORT = process.env.PORT || 3000;
 const DOMAIN = process.env.DOMAIN;
 const CALLBACK_URL = `https://${DOMAIN}/auth/github/callback`;
 
+// Trust proxy (Nginx reverse proxy)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: false // Allow inline scripts for simplicity
@@ -40,14 +43,16 @@ app.use(express.urlencoded({ extended: true }));
 
 // Session configuration
 app.use(session({
-  secret: process.env.SESSION_SECRET,
+  secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
   resave: false,
   saveUninitialized: false,
   cookie: {
     secure: true,
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  }
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: 'lax' // Important for OAuth callback
+  },
+  proxy: true // Trust proxy (Nginx)
 }));
 
 // Passport configuration
@@ -112,6 +117,9 @@ app.get('/auth/github', (req, res, next) => {
   const state = crypto.randomBytes(32).toString('hex');
   req.session.oauthState = state;
   
+  console.log('OAuth initiated - State:', state);
+  console.log('Session ID:', req.sessionID);
+  
   passport.authenticate('github', {
     scope: ['user:email'],
     state: state
@@ -120,9 +128,14 @@ app.get('/auth/github', (req, res, next) => {
 
 app.get('/auth/github/callback',
   (req, res, next) => {
+    console.log('OAuth callback - Query state:', req.query.state);
+    console.log('Session state:', req.session.oauthState);
+    console.log('Session ID:', req.sessionID);
+    
     // Verify state parameter
     if (req.query.state !== req.session.oauthState) {
-      return res.status(403).send('Invalid state parameter');
+      console.error('State mismatch! Query:', req.query.state, 'Session:', req.session.oauthState);
+      return res.status(403).send('Invalid state parameter. Please try logging in again.');
     }
     delete req.session.oauthState;
     next();

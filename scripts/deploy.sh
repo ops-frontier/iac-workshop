@@ -87,9 +87,9 @@ deploy_terraform() {
         echo "サーバーIPアドレス: $SERVER_IP"
         echo ""
         
-        # サーバー起動待機（pingで確認しながら）
+        # サーバー起動待機（SSHで確認しながら）
         echo "⏳ サーバーの起動を待っています..."
-        echo "   Pingで接続確認中（最大10分間）..."
+        echo "   SSH接続で確認中（最大10分間）..."
         echo ""
         
         MAX_ATTEMPTS=120  # 10分間（5秒間隔で120回）
@@ -101,10 +101,10 @@ deploy_terraform() {
             ELAPSED=$((ATTEMPT * 5))
             
             # 進捗表示
-            printf "\r   経過時間: %d秒 / 600秒 - Ping試行中..." $ELAPSED
+            printf "\r   経過時間: %d秒 / 600秒 - SSH試行 %d/%d..." $ELAPSED $ATTEMPT $MAX_ATTEMPTS
             
-            # Pingテスト（タイムアウト2秒）
-            if ping -c 1 -W 2 "$SERVER_IP" > /dev/null 2>&1; then
+            # SSHテスト（タイムアウト5秒）
+            if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$SERVER_IP" exit 2>/dev/null; then
                 echo ""
                 echo "✅ サーバーが起動しました！（${ELAPSED}秒後）"
                 SERVER_UP=true
@@ -123,31 +123,35 @@ deploy_terraform() {
             echo "  https://secure.sakura.ad.jp/cloud/"
             echo ""
             echo "考えられる原因:"
-            echo "  - サーバーがまだ起動処理中"
-            echo "  - パケットフィルタの設定ミス"
+            echo "  - サーバーがまだ起動処理中（cloud-initに時間がかかる）"
+            echo "  - SSH鍵認証の問題"
             echo "  - ネットワーク設定の問題"
             echo ""
-            echo "ログイン情報:"
+            echo "Webコンソールからログイン:"
             echo "  ユーザー名: ubuntu"
             echo "  パスワード: TempPassword123!"
+            echo ""
+            echo "確認コマンド:"
+            echo "  sudo cloud-init status"
+            echo "  ip a show ens3"
+            echo "  sudo systemctl status sshd"
         else
             # サーバーが起動したら、cloud-init完了を少し待つ
-            echo "⏳ cloud-initの完了を待っています（60秒）..."
-            sleep 60
+            echo "⏳ cloud-initの完了を待っています（30秒）..."
+            sleep 30
         fi
         
         echo ""
         
         # 接続テスト
         echo "🔍 接続テスト中..."
-        if ping -c 3 "$SERVER_IP" > /dev/null 2>&1; then
-            echo "✅ Ping成功"
-        else
-            echo "⚠️  Ping失敗（ICMPがブロックされている可能性があります）"
-        fi
-        
-        if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "echo 'test'" > /dev/null 2>&1; then
+        if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "echo 'SSH connection test'" 2>&1 | grep -q "SSH connection test"; then
             echo "✅ SSH接続成功"
+            
+            # cloud-init状態確認
+            echo ""
+            echo "cloud-init状態確認中..."
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "sudo cloud-init status" 2>&1 || echo "⚠️  cloud-init状態を確認できませんでした"
         else
             echo "⚠️  SSH接続失敗"
             echo ""

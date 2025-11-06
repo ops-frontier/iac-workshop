@@ -52,9 +52,9 @@ SERVER_IP=$(terraform output -raw server_ip)
 echo -e "${GREEN}Server IP: ${SERVER_IP}${NC}"
 echo ""
 
-# Step 7: Wait for server to boot (ping check)
+# Step 7: Wait for server to boot (SSH check)
 echo -e "${YELLOW}Step 7: Waiting for server to boot${NC}"
-echo "Checking connectivity with ping (max 10 minutes)..."
+echo "Checking connectivity with SSH (max 10 minutes)..."
 echo ""
 
 MAX_ATTEMPTS=120  # 10 minutes (5 second intervals)
@@ -66,10 +66,10 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     ELAPSED=$((ATTEMPT * 5))
     
     # Progress display
-    printf "\r   Elapsed: %d seconds / 600 seconds - Pinging..." $ELAPSED
+    printf "\r   Elapsed: %d seconds / 600 seconds - SSH attempt %d/%d..." $ELAPSED $ATTEMPT $MAX_ATTEMPTS
     
-    # Ping test (2 second timeout)
-    if ping -c 1 -W 2 "$SERVER_IP" > /dev/null 2>&1; then
+    # SSH test (5 second timeout)
+    if ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$SERVER_IP" exit 2>/dev/null; then
         echo ""
         echo -e "${GREEN}✓ Server is up! (after ${ELAPSED} seconds)${NC}"
         SERVER_UP=true
@@ -88,43 +88,47 @@ if [ "$SERVER_UP" = false ]; then
     echo "  https://secure.sakura.ad.jp/cloud/"
     echo ""
     echo "Possible causes:"
-    echo "  - Server still booting"
-    echo "  - Packet filter misconfiguration"
+    echo "  - Server still booting (cloud-init takes time)"
+    echo "  - SSH key authentication issue"
     echo "  - Network configuration issue"
     echo ""
-    echo "Login credentials:"
+    echo "Try logging in via Web Console:"
     echo "  Username: ubuntu"
     echo "  Password: TempPassword123!"
+    echo ""
+    echo "Then check:"
+    echo "  - sudo cloud-init status"
+    echo "  - ip a show ens3"
+    echo "  - sudo systemctl status sshd"
 else
     # Wait a bit more for cloud-init to complete
-    echo "⏳ Waiting for cloud-init to complete (60 seconds)..."
-    sleep 60
+    echo "⏳ Waiting for cloud-init to complete (30 seconds)..."
+    sleep 30
 fi
 
 echo ""
 
 # Step 8: Test connectivity
 echo -e "${YELLOW}Step 8: Testing connectivity${NC}"
-echo "Testing ping..."
-if ping -c 3 "$SERVER_IP" > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Ping successful${NC}"
-else
-    echo -e "${RED}✗ Ping failed${NC}"
-    echo "Note: This might be normal if ICMP is blocked"
-fi
-
-echo ""
-echo "Testing SSH..."
-if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "echo 'SSH connection successful'" > /dev/null 2>&1; then
+echo "Testing SSH connection..."
+if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "echo 'SSH connection successful'" 2>&1 | grep -q "SSH connection successful"; then
     echo -e "${GREEN}✓ SSH connection successful${NC}"
+    
+    # Check cloud-init status
+    echo ""
+    echo "Checking cloud-init status..."
+    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "sudo cloud-init status" 2>&1 || echo -e "${YELLOW}⚠ Could not check cloud-init status${NC}"
 else
-    echo -e "${YELLOW}⚠ SSH connection failed${NC}"
+    echo -e "${YELLOW}⚠ SSH connection failed or cloud-init still running${NC}"
+    echo ""
     echo "You may need to:"
     echo "1. Wait a few more minutes for cloud-init to complete"
-    echo "2. Try connecting via Web Console with:"
+    echo "2. Try connecting via Web Console:"
     echo "   Username: ubuntu"
     echo "   Password: TempPassword123!"
-    echo "3. Check cloud-init logs: sudo cat /var/log/cloud-init.log"
+    echo "3. Check cloud-init logs:"
+    echo "   sudo cloud-init status"
+    echo "   sudo cat /var/log/cloud-init-output.log"
 fi
 
 # Step 9: Update Ansible inventory
