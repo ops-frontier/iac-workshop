@@ -26,6 +26,7 @@ function initialize() {
       repo_url TEXT NOT NULL,
       container_id TEXT,
       status TEXT DEFAULT 'stopped',
+      devcontainer_build_status TEXT DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
@@ -34,6 +35,19 @@ function initialize() {
 
     CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id);
   `);
+  
+  // Migration: Add devcontainer_build_status column if it doesn't exist
+  try {
+    const columns = db.prepare("PRAGMA table_info(workspaces)").all();
+    const hasDevcontainerBuildStatus = columns.some(col => col.name === 'devcontainer_build_status');
+    
+    if (!hasDevcontainerBuildStatus) {
+      db.exec('ALTER TABLE workspaces ADD COLUMN devcontainer_build_status TEXT DEFAULT NULL');
+      console.log('Migration: Added devcontainer_build_status column to workspaces table');
+    }
+  } catch (error) {
+    console.error('Migration error:', error);
+  }
 }
 
 function upsertUser(user) {
@@ -103,6 +117,11 @@ function deleteWorkspace(id) {
   return stmt.run(id);
 }
 
+function updateWorkspaceDevcontainerBuildStatus(id, buildStatus) {
+  const stmt = db.prepare('UPDATE workspaces SET devcontainer_build_status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+  return stmt.run(buildStatus, id);
+}
+
 module.exports = {
   initialize,
   upsertUser,
@@ -113,5 +132,6 @@ module.exports = {
   getWorkspaceByName,
   updateWorkspaceStatus,
   updateWorkspaceContainer,
+  updateWorkspaceDevcontainerBuildStatus,
   deleteWorkspace
 };

@@ -519,11 +519,22 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
     
     buildLogger.info('Workspace build completed successfully');
     
+    // Determine devcontainer build status
+    let devcontainerBuildStatus;
+    if (!hasDevcontainer) {
+      devcontainerBuildStatus = 'no_devcontainer';
+    } else if (retryWithDefault) {
+      devcontainerBuildStatus = 'failed';
+    } else {
+      devcontainerBuildStatus = 'success';
+    }
+    
     return {
       containerId: containerInfo.Id,
       name: workspaceName,
       url: `/${username}/workspaces/${workspaceName}`,
-      status: 'running'
+      status: 'running',
+      devcontainerBuildStatus
     };
   } catch (error) {
     buildLogger.error({ error: error.message, stack: error.stack }, 'Error in buildWithDevcontainerCLI');
@@ -575,11 +586,22 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
             
             await writeToBuildLog(buildLogFile, `\n=== BUILD COMPLETED WITH WARNINGS ===\nContainer is running and accessible.\n`);
             
+            // Determine devcontainer build status
+            let devcontainerBuildStatus;
+            if (!hasDevcontainer) {
+              devcontainerBuildStatus = 'no_devcontainer';
+            } else if (retryWithDefault) {
+              devcontainerBuildStatus = 'failed';
+            } else {
+              devcontainerBuildStatus = 'success';
+            }
+            
             return {
               containerId: container.Id,
               name: workspaceName,
               url: `/${username}/workspaces/${workspaceName}`,
-              status: 'running'
+              status: 'running',
+              devcontainerBuildStatus
             };
           }
         }

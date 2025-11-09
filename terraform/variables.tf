@@ -33,13 +33,13 @@ variable "server_name" {
 variable "server_core" {
   description = "Number of CPU cores"
   type        = number
-  default     = 4
+  default     = 2
 }
 
 variable "server_memory" {
   description = "Memory size in GB"
   type        = number
-  default     = 8
+  default     = 4
 }
 
 variable "disk_size" {

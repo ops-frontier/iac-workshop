@@ -113,6 +113,11 @@ app.use(passport.session());
 // Static files
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Explicit favicon route
+app.get('/favicon.ico', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'favicon.ico'));
+});
+
 // Middleware to check authentication for pages
 function ensureAuthenticated(req, res, next) {
   const sessionLogger = logger.child({ 
@@ -280,6 +285,11 @@ app.post('/api/workspaces', ensureAuthenticatedAPI, async (req, res) => {
         
         // Update database with container ID and status
         db.updateWorkspaceContainer(workspaceId, workspace.containerId, 'running');
+        
+        // Update devcontainer build status if available
+        if (workspace.devcontainerBuildStatus) {
+          db.updateWorkspaceDevcontainerBuildStatus(workspaceId, workspace.devcontainerBuildStatus);
+        }
         
         const updatedWorkspace = db.getWorkspace(workspaceId);
         workspaceEvents.publish(req.user.id, updatedWorkspace, 'updated');
@@ -611,6 +621,12 @@ app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res)
         
         // Update database with new container ID
         db.updateWorkspaceContainer(req.params.id, newWorkspace.containerId, 'running');
+        
+        // Update devcontainer build status if available
+        if (newWorkspace.devcontainerBuildStatus) {
+          db.updateWorkspaceDevcontainerBuildStatus(req.params.id, newWorkspace.devcontainerBuildStatus);
+        }
+        
         const updatedWorkspace = db.getWorkspace(req.params.id);
         workspaceEvents.publish(req.user.id, updatedWorkspace, 'updated');
         

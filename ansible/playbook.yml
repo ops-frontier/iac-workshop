@@ -114,7 +114,7 @@
       ansible.builtin.command:
         cmd: >
           certbot certonly --standalone --non-interactive --agree-tos
-          --email {{ email }} -d {{ domain }}
+          --email {{ email }} -d {{ domain }} --staging
         creates: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
 
     - name: Copy SSL certificates to app directory

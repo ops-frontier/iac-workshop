@@ -32,18 +32,59 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 24px;
         }
 
-        .user-info {
+        .header-logo {
+            flex-shrink: 0;
+        }
+
+        .header-logo img {
+            height: 40px;
+            width: auto;
+        }
+
+        .header-title {
+            flex: 1;
+            text-align: center;
+            font-size: 24px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .header-right {
+            flex-shrink: 0;
             display: flex;
             align-items: center;
             gap: 16px;
         }
 
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .user-avatar {
-            width: 48px;
-            height: 48px;
+            width: 40px;
+            height: 40px;
             border-radius: 50%;
+        }
+
+        .user-details {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user-name {
+            font-weight: 600;
+            color: #1f2937;
+            font-size: 14px;
+        }
+
+        .user-email {
+            font-size: 12px;
+            color: #6b7280;
         }
 
         .logout-btn {
@@ -141,6 +182,20 @@
         .status-stopped { background: #f3f4f6; color: #374151; }
         .status-deleting { background: #fee2e2; color: #991b1b; }
         .status-failed { background: #fecaca; color: #7f1d1d; }
+
+        .devcontainer-build-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-bottom: 16px;
+            margin-left: 8px;
+        }
+
+        .build-success { background: #d1fae5; color: #065f46; }
+        .build-failed { background: #fed7aa; color: #9a3412; }
+        .build-no-devcontainer { background: #e0e7ff; color: #3730a3; }
 
         .workspace-actions {
             display: flex;
@@ -314,19 +369,51 @@
             margin-bottom: 16px;
             opacity: 0.5;
         }
+
+        /* Responsive design for header */
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                gap: 16px;
+            }
+
+            .header-logo {
+                align-self: flex-start;
+            }
+
+            .header-title {
+                text-align: left;
+                width: 100%;
+            }
+
+            .header-right {
+                width: 100%;
+                justify-content: space-between;
+            }
+
+            .user-email {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <div class="user-info">
-                <img id="userAvatar" class="user-avatar" src="" alt="User Avatar">
-                <div>
-                    <div id="userName" style="font-weight: 600; color: #1f2937;"></div>
-                    <div id="userEmail" style="font-size: 14px; color: #6b7280;"></div>
-                </div>
+            <div class="header-logo">
+                <img src="/logo.svg" alt="Pseudo CodeSpaces Logo">
             </div>
-            <button class="logout-btn" onclick="logout()">ログアウト</button>
+            <div class="header-title">ダッシュボード</div>
+            <div class="header-right">
+                <div class="user-info">
+                    <img id="userAvatar" class="user-avatar" src="" alt="User Avatar">
+                    <div class="user-details">
+                        <div id="userName" class="user-name"></div>
+                        <div id="userEmail" class="user-email"></div>
+                    </div>
+                </div>
+                <button class="logout-btn" onclick="logout()">ログアウト</button>
+            </div>
         </div>
 
         <div class="workspaces-section">
@@ -390,7 +477,8 @@
         // Handle API response
         async function handleAPIResponse(response) {
             if (response.status === 401) {
-                setTimeout(() => window.location.href = '/', 0);
+                alert('セッションが切れています。ログインし直してください');
+                window.location.href = '/';
                 throw new Error('Unauthorized');
             }
             if (!response.ok) {
@@ -484,13 +572,23 @@
             const canDelete = ['stopped', 'failed'].includes(ws.status);
             const isFailed = ws.status === 'failed';
             
+            // Get devcontainer build status badge
+            let devcontainerBuildBadge = '';
+            if (ws.devcontainer_build_status) {
+                const buildStatusInfo = getDevcontainerBuildStatusInfo(ws.devcontainer_build_status);
+                devcontainerBuildBadge = `<span class="devcontainer-build-status ${buildStatusInfo.class}" title="${buildStatusInfo.title}">${buildStatusInfo.text}</span>`;
+            }
+            
             return `
                 <div class="workspace-card ${isProcessing ? 'pulse' : ''}">
                     <div class="workspace-name">${escapeHtml(ws.name)}</div>
                     <div class="workspace-repo">${escapeHtml(ws.repo_url)}</div>
-                    <div class="workspace-status ${statusClass}">
-                        ${isProcessing ? '<span class="loading-spinner"></span> ' : ''}
-                        ${statusText}
+                    <div>
+                        <span class="workspace-status ${statusClass}">
+                            ${isProcessing ? '<span class="loading-spinner"></span> ' : ''}
+                            ${statusText}
+                        </span>
+                        ${devcontainerBuildBadge}
                     </div>
                     <div class="workspace-actions">
                         <button class="btn btn-primary" 
@@ -543,6 +641,28 @@
             return statusMap[status] || status;
         }
 
+        // Get devcontainer build status info
+        function getDevcontainerBuildStatusInfo(status) {
+            const statusMap = {
+                'success': {
+                    text: 'ビルド成功',
+                    class: 'build-success',
+                    title: 'devcontainer.jsonでのビルドに成功しました'
+                },
+                'failed': {
+                    text: 'ビルド失敗',
+                    class: 'build-failed',
+                    title: 'devcontainer.jsonのビルドに失敗し、デフォルト開発コンテナにフォールバックしました'
+                },
+                'no_devcontainer': {
+                    text: 'devcontainer.jsonなし',
+                    class: 'build-no-devcontainer',
+                    title: 'devcontainer.jsonが含まれておらず、デフォルト開発コンテナをビルドしました'
+                }
+            };
+            return statusMap[status] || { text: status, class: '', title: status };
+        }
+
         // Escape HTML
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -590,6 +710,11 @@
                 body: JSON.stringify({ name, repoUrl, envVars })
             })
             .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
                 if (!response.ok) {
                     return response.json().then(err => {
                         throw new Error(err.error || 'ワークスペースの作成に失敗しました');
@@ -602,7 +727,9 @@
             })
             .catch(error => {
                 console.error('Error creating workspace:', error);
-                alert('エラー: ' + error.message);
+                if (error.message !== 'Unauthorized') {
+                    alert('エラー: ' + error.message);
+                }
             });
         }
 
@@ -617,6 +744,11 @@
                 method: 'POST'
             })
             .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
                 if (!response.ok) {
                     return response.json().then(err => {
                         throw new Error(err.error || '起動に失敗しました');
@@ -628,7 +760,9 @@
                 console.log('Workspace start initiated:', data);
             })
             .catch(error => {
-                console.error('Error starting workspace:', error);
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error starting workspace:', error);
+                }
             });
         }
 
@@ -638,6 +772,11 @@
                 method: 'POST'
             })
             .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
                 if (!response.ok) {
                     return response.json().then(err => {
                         throw new Error(err.error || '停止に失敗しました');
@@ -649,7 +788,9 @@
                 console.log('Workspace stop initiated:', data);
             })
             .catch(error => {
-                console.error('Error stopping workspace:', error);
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error stopping workspace:', error);
+                }
             });
         }
 
@@ -663,6 +804,11 @@
                 method: 'DELETE'
             })
             .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
                 if (!response.ok) {
                     return response.json().then(err => {
                         throw new Error(err.error || '削除に失敗しました');
@@ -674,7 +820,9 @@
                 console.log('Workspace deletion initiated:', data);
             })
             .catch(error => {
-                console.error('Error deleting workspace:', error);
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error deleting workspace:', error);
+                }
             });
         }
 
@@ -688,6 +836,11 @@
                 method: 'POST'
             })
             .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
                 if (!response.ok) {
                     return response.json().then(err => {
                         throw new Error(err.error || '再ビルドに失敗しました');
@@ -699,8 +852,10 @@
                 console.log('Workspace rebuild initiated:', data);
             })
             .catch(error => {
-                console.error('Error rebuilding workspace:', error);
-                alert('エラー: ' + error.message);
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error rebuilding workspace:', error);
+                    alert('エラー: ' + error.message);
+                }
             });
         }
 
