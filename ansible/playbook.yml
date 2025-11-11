@@ -26,6 +26,18 @@
             export TF_VAR_domain=pcs.example.com
           Or run with: TF_VAR_domain=pcs.example.com ansible-playbook -i inventory.ini playbook.yml
 
+    - name: Wait for cloud-init to complete
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+
+    - name: Wait for dpkg lock to be released
+      ansible.builtin.shell: |
+        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+          echo "Waiting for dpkg lock..."
+          sleep 5
+        done
+      changed_when: false
+
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
@@ -77,6 +89,23 @@
         state: started
         enabled: true
 
+    - name: Create codespace group (GID 1000)
+      ansible.builtin.group:
+        name: codespace
+        gid: 1000
+        state: present
+
+    - name: Create codespace user (UID 1000)
+      ansible.builtin.user:
+        name: codespace
+        uid: 1000
+        group: codespace
+        groups: docker
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+
     - name: Create application directory
       ansible.builtin.file:
         path: "{{ app_dir }}"
@@ -99,6 +128,17 @@
         - "{{ app_dir }}/data"
         - "{{ app_dir }}/ssl"
         - "{{ app_dir }}/workspaces"
+
+    - name: Create workspace and build log directories for codespace user
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: codespace
+        group: codespace
+        mode: '0755'
+      loop:
+        - /home/codespace/workspaces
+        - /home/codespace/buildlogs
 
     - name: Copy application files
       ansible.builtin.copy:
@@ -127,12 +167,18 @@
         group: ubuntu
         mode: '0600'
 
+    - name: Check if SSL certificate already exists
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+      register: ssl_cert
+
     - name: Stop system nginx for SSL certificate generation
       ansible.builtin.systemd:
         name: nginx
         state: stopped
       register: nginx_stop
       failed_when: nginx_stop.failed and 'not be found' not in nginx_stop.msg
+      when: not ssl_cert.stat.exists
 
     - name: Stop any existing nginx containers for SSL certificate generation
       community.docker.docker_compose_v2:
@@ -140,13 +186,15 @@
         state: stopped
       register: docker_stop
       failed_when: false
+      when: not ssl_cert.stat.exists
 
     - name: Obtain SSL certificate with certbot
       ansible.builtin.command:
         cmd: >
           certbot certonly --standalone --non-interactive --agree-tos
           --email {{ email }} -d {{ domain }} --staging
-        creates: /etc/letsencrypt/live/{{ domain }}/fullchain.pem
+      when: not ssl_cert.stat.exists
+      changed_when: true
 
     - name: Copy SSL certificates to app directory
       ansible.builtin.copy:

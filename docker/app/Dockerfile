@@ -1,7 +1,13 @@
 FROM node:20-alpine
 
-# Install git and docker CLI
-RUN apk add --no-cache git docker-cli
+# Install git, docker CLI, and sudo
+RUN apk add --no-cache git docker-cli sudo shadow
+
+# Rename node user (UID 1000) to codespace
+# Alpine uses deluser/adduser instead of usermod/groupmod
+RUN deluser --remove-home node && \
+    addgroup -g 1000 codespace && \
+    adduser -D -u 1000 -G codespace -h /home/codespace -s /bin/sh codespace
 
 WORKDIR /app
 

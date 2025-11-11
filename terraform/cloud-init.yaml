@@ -4,6 +4,7 @@
 # ユーザー設定
 users:
   - name: ubuntu
+    uid: 1001
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, admin
     shell: /bin/bash

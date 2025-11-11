@@ -15,9 +15,9 @@ const {
 const execAsync = promisify(exec);
 const docker = new Docker();
 
-const WORKSPACES_BASE_DIR = '/home';
+const WORKSPACES_BASE_DIR = '/home/codespace/workspaces';
 const NGINX_CONFIG_DIR = '/opt/nginx-config';
-const BUILD_LOGS_BASE_DIR = '/home';
+const BUILD_LOGS_BASE_DIR = '/home/codespace/buildlogs';
 
 async function createWorkspace(username, workspaceName, repoUrl, envVars = {}, workspaceId = null) {
   const wsLogger = createWorkspaceLogger(username, workspaceName);
@@ -27,7 +27,7 @@ async function createWorkspace(username, workspaceName, repoUrl, envVars = {}, w
     wsLogger.info({ repoUrl }, 'Creating workspace');
   }
   
-  const workspaceDir = path.join(WORKSPACES_BASE_DIR, username, 'workspaces', workspaceName);
+  const workspaceDir = path.join(WORKSPACES_BASE_DIR, workspaceName);
   
   // Check if workspace directory already exists
   try {
@@ -51,13 +51,25 @@ async function createWorkspace(username, workspaceName, repoUrl, envVars = {}, w
   // Create workspace directory
   await fs.mkdir(workspaceDir, { recursive: true });
   wsLogger.debug({ workspaceDir }, 'Workspace directory created');
-  
-  // Clone repository
+
+  // Ensure workspace directory is owned by codespace so clone as codespace can write into it
+  try {
+    await execAsync(`chown -R codespace:codespace "${workspaceDir}"`);
+  } catch (err) {
+    wsLogger.warn({ error: err.message }, 'chown before clone failed (continuing)');
+  }
+
+  // Clone repository as codespace user
   const cloneLogger = createActionLogger(username, workspaceName, 'clone-repository');
-  cloneLogger.info({ repoUrl }, 'Cloning repository');
-  const git = simpleGit();
-  await git.clone(repoUrl, workspaceDir);
-  cloneLogger.info('Repository cloned successfully');
+  cloneLogger.info({ repoUrl }, 'Cloning repository as codespace');
+  try {
+    // Use sudo -u codespace to perform the clone as the codespace user
+    await execAsync(`sudo -u codespace git clone '${repoUrl}' '${workspaceDir}'`, { maxBuffer: 10 * 1024 * 1024 });
+    cloneLogger.info('Repository cloned successfully');
+  } catch (err) {
+    cloneLogger.error({ error: err.message, stderr: err.stderr, stdout: err.stdout }, 'Git clone failed');
+    throw err;
+  }
   
   // Check for devcontainer.json
   const devcontainerPath = path.join(workspaceDir, '.devcontainer', 'devcontainer.json');
@@ -89,8 +101,7 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
   const networkName = 'pseudo-codespaces_pseudo-codespaces';
   
   // Prepare build log
-  const buildLogDir = path.join(BUILD_LOGS_BASE_DIR, username, 'buildlogs');
-  await fs.mkdir(buildLogDir, { recursive: true });
+  await fs.mkdir(BUILD_LOGS_BASE_DIR, { recursive: true });
   const buildLogFile = getBuildLogPath(username, workspaceName);
   
   if (retryWithDefault) {
@@ -135,7 +146,7 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       const devcontainerConfig = {
         name: workspaceName,
         image: defaultImage,
-        
+
         customizations: {
           vscode: {
             settings: {},
@@ -316,14 +327,21 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       containerLogger.debug('Container is not on bridge network, no disconnection needed');
     }
     
-    // Install and start code-server in the devcontainer
+    // Ensure UID 1000 user exists in container (codespace user)
+    const uid1000Logger = createContainerLogger(username, workspaceName, containerInfo.Id, 'ensure-uid1000');
+    await writeToBuildLog(buildLogFile, '\n=== Ensuring UID 1000 user exists ===\n');
+    const uid1000User = await ensureUID1000User(containerObj, uid1000Logger);
+    await writeToBuildLog(buildLogFile, `UID 1000 user: ${uid1000User}\n`);
+    
+    // Install code-server as root, then start it as UID 1000 user
     const installLogger = createActionLogger(username, workspaceName, 'setup-code-server');
-    installLogger.info('Installing code-server in devcontainer');
+    installLogger.info('Installing code-server as root');
     await writeToBuildLog(buildLogFile, '\n=== Installing code-server ===\n');
     
+    // Step 1: Install code-server as root
     const installScript = `
       set -e
-      echo "Starting code-server installation..."
+      echo "Starting code-server installation as root..."
       if ! command -v code-server &> /dev/null; then
         echo "code-server not found, installing..."
         curl -fsSL https://code-server.dev/install.sh | sh
@@ -331,9 +349,41 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       else
         echo "code-server already installed"
       fi
-      
-      # Start code-server in the background
-      echo "Starting code-server on port 8080..."
+    `;
+    
+    const execInstall = await containerObj.exec({
+      Cmd: ['/bin/sh', '-c', installScript],
+      AttachStdout: true,
+      AttachStderr: true,
+      User: 'root'
+    });
+    
+    const installStream = await execInstall.start({});
+    
+    // Collect and log install output
+    await new Promise((resolve, reject) => {
+      installStream.on('end', resolve);
+      installStream.on('error', reject);
+      installStream.on('data', (chunk) => {
+        const text = chunk.toString();
+        writeToBuildLog(buildLogFile, text).catch(err => 
+          installLogger.error({ error: err.message }, 'Failed to write to build log')
+        );
+        if (text.includes('installed') || text.includes('ERROR')) {
+          installLogger.info({ message: text.trim() }, 'code-server installation progress');
+        } else {
+          installLogger.debug({ message: text.trim() }, 'code-server installation output');
+        }
+      });
+    });
+    
+    installLogger.info({ user: uid1000User }, 'Starting code-server as UID 1000 user (codespace)');
+    await writeToBuildLog(buildLogFile, '\n=== Starting code-server ===\n');
+    
+    // Step 2: Start code-server as UID 1000 user
+    const startScript = `
+      set -e
+      echo "Starting code-server on port 8080 as user ${uid1000User}..."
       nohup code-server --bind-addr 0.0.0.0:8080 --auth none /workspaces > /tmp/code-server.log 2>&1 &
       CODE_SERVER_PID=$!
       echo "code-server started with PID: $CODE_SERVER_PID"
@@ -365,37 +415,34 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       exit 0
     `;
     
-    const execInstall = await containerObj.exec({
-      Cmd: ['/bin/sh', '-c', installScript],
+    const execStart = await containerObj.exec({
+      Cmd: ['/bin/sh', '-c', startScript],
       AttachStdout: true,
-      AttachStderr: true
+      AttachStderr: true,
+      User: uid1000User
     });
     
-    const stream = await execInstall.start({});
+    const startStream = await execStart.start({});
     
-    // Collect and log output
-    let output = '';
+    // Collect and log start output
     await new Promise((resolve, reject) => {
-      stream.on('end', resolve);
-      stream.on('error', reject);
-      stream.on('data', (chunk) => {
+      startStream.on('end', resolve);
+      startStream.on('error', reject);
+      startStream.on('data', (chunk) => {
         const text = chunk.toString();
-        output += text;
-        // Write to build log file
         writeToBuildLog(buildLogFile, text).catch(err => 
           installLogger.error({ error: err.message }, 'Failed to write to build log')
         );
-        // Only log important messages at info level
-        if (text.includes('ready') || text.includes('ERROR') || text.includes('installed')) {
-          installLogger.info({ message: text.trim() }, 'code-server setup progress');
+        if (text.includes('ready') || text.includes('ERROR') || text.includes('started')) {
+          installLogger.info({ message: text.trim() }, 'code-server start progress');
         } else {
-          installLogger.debug({ message: text.trim() }, 'code-server setup output');
+          installLogger.debug({ message: text.trim() }, 'code-server start output');
         }
       });
     });
     
-    await writeToBuildLog(buildLogFile, '\n=== code-server installation completed ===\n');
-    installLogger.info('code-server installation completed');
+    await writeToBuildLog(buildLogFile, '\n=== code-server setup completed ===\n');
+    installLogger.info('code-server setup completed');
     
     // Additional wait for code-server to fully start
     installLogger.debug('Giving code-server additional time to initialize');
@@ -569,13 +616,14 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
           buildLogger.info('Restored original devcontainer.json');
           await writeToBuildLog(buildLogFile, '\n=== Restored original devcontainer.json ===\n');
         } else {
-          // Otherwise, remove the temporary one
-          await fs.unlink(tempDevcontainerPath);
-          buildLogger.info('Removed temporary devcontainer.json');
-          await writeToBuildLog(buildLogFile, '\n=== Cleaned up temporary devcontainer.json ===\n');
+          // Otherwise, remove the temporary .devcontainer directory entirely
+          const devcontainerDir = path.join(workspaceDir, '.devcontainer');
+          await execAsync(`rm -rf "${devcontainerDir}"`);
+          buildLogger.info('Removed temporary .devcontainer directory');
+          await writeToBuildLog(buildLogFile, '\n=== Cleaned up temporary .devcontainer directory ===\n');
         }
       } catch (error) {
-        buildLogger.warn({ error: error.message }, 'Failed to clean up devcontainer.json');
+        buildLogger.warn({ error: error.message }, 'Failed to clean up devcontainer files');
         // Don't fail the build if cleanup fails
       }
     }
@@ -754,7 +802,7 @@ async function deleteWorkspace(containerId) {
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       // Remove workspace directory
-      const workspaceDir = path.join(WORKSPACES_BASE_DIR, username, 'workspaces', workspaceName);
+      const workspaceDir = path.join(WORKSPACES_BASE_DIR, workspaceName);
       containerLogger.info({ workspaceDir }, 'About to remove workspace directory');
       try {
         await removeWorkspaceDirectory(workspaceDir, containerLogger);
@@ -866,7 +914,7 @@ async function buildWorkspace(username, workspaceName, envVars = {}, workspaceId
   const buildLogger = createActionLogger(username, workspaceName, 'rebuild-workspace');
   buildLogger.info('Rebuilding workspace');
   
-  const workspaceDir = path.join(WORKSPACES_BASE_DIR, username, 'workspaces', workspaceName);
+  const workspaceDir = path.join(WORKSPACES_BASE_DIR, workspaceName);
   
   // Check if workspace directory exists
   try {
@@ -921,7 +969,7 @@ async function cleanupWorkspaceFiles(username, workspaceName) {
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Remove workspace directory
-    const workspaceDir = path.join(WORKSPACES_BASE_DIR, username, 'workspaces', workspaceName);
+    const workspaceDir = path.join(WORKSPACES_BASE_DIR, workspaceName);
     cleanupLogger.info({ workspaceDir }, 'About to remove workspace directory');
     try {
       await removeWorkspaceDirectory(workspaceDir, cleanupLogger);
@@ -940,7 +988,7 @@ async function cleanupWorkspaceFiles(username, workspaceName) {
 
 // Helper function to get build log file path
 function getBuildLogPath(username, workspaceName) {
-  return path.join(BUILD_LOGS_BASE_DIR, username, 'buildlogs', `${workspaceName}.log`);
+  return path.join(BUILD_LOGS_BASE_DIR, `${workspaceName}.log`);
 }
 
 // Helper function to write to build log
@@ -949,6 +997,113 @@ async function writeToBuildLog(logFile, message) {
     await fs.appendFile(logFile, message + '\n');
   } catch (error) {
     logger.error({ error: error.message, logFile }, 'Failed to write to build log');
+  }
+}
+
+// Helper function to ensure UID 1000 user exists in container
+async function ensureUID1000User(containerObj, containerLogger) {
+  try {
+    containerLogger.info('Checking for UID 1000 user in container');
+    
+    // Get current user running in the container
+    const idExec = await containerObj.exec({
+      Cmd: ['id', '-un'],
+      AttachStdout: true,
+      AttachStderr: true
+    });
+    
+    const idStream = await idExec.start({ hijack: true, stdin: false });
+    let currentUser = '';
+    
+    // Use demuxStream to handle Docker's stream format
+    const stdout = [];
+    const stderr = [];
+    
+    docker.modem.demuxStream(idStream, 
+      { write: (chunk) => stdout.push(chunk) },
+      { write: (chunk) => stderr.push(chunk) }
+    );
+    
+    await new Promise((resolve) => idStream.on('end', resolve));
+    currentUser = Buffer.concat(stdout).toString('utf8').trim();
+    
+    containerLogger.info({ currentUser }, 'Current container user');
+    
+    if (currentUser === 'root') {
+      // Check if UID 1000 user exists
+      const getentExec = await containerObj.exec({
+        Cmd: ['getent', 'passwd', '1000'],
+        AttachStdout: true,
+        AttachStderr: true
+      });
+      
+      const getentStream = await getentExec.start({ hijack: true, stdin: false });
+      
+      // Use demuxStream to handle Docker's stream format
+      const getentStdout = [];
+      const getentStderr = [];
+      
+      docker.modem.demuxStream(getentStream, 
+        { write: (chunk) => getentStdout.push(chunk) },
+        { write: (chunk) => getentStderr.push(chunk) }
+      );
+      
+      await new Promise((resolve) => getentStream.on('end', resolve));
+      const getentOutput = Buffer.concat(getentStdout).toString('utf8').trim();
+      
+      if (!getentOutput) {
+        // UID 1000 user doesn't exist, create it
+        containerLogger.info('Creating UID 1000 user (codespace)');
+        
+        const useraddExec = await containerObj.exec({
+          Cmd: ['useradd', '-u', '1000', '-m', '-s', '/bin/bash', 'codespace'],
+          AttachStdout: true,
+          AttachStderr: true,
+          User: 'root'
+        });
+        
+        await useraddExec.start({});
+        containerLogger.info('Created UID 1000 user: codespace');
+        return 'codespace';
+      } else {
+        // UID 1000 user exists, extract username
+        const existingUser = getentOutput.split(':')[0].trim();
+        containerLogger.info({ existingUser }, 'UID 1000 user already exists');
+        return existingUser;
+      }
+    } else {
+      // Current user is not root, change their UID to 1000
+      containerLogger.info({ currentUser }, 'Changing user UID to 1000');
+      
+      const usermodExec = await containerObj.exec({
+        Cmd: ['usermod', '-u', '1000', '-o', currentUser],
+        AttachStdout: true,
+        AttachStderr: true,
+        User: 'root'
+      });
+      
+      await usermodExec.start({});
+      
+      // Also try to change GID if possible
+      try {
+        const groupmodExec = await containerObj.exec({
+          Cmd: ['groupmod', '-g', '1000', '-o', currentUser],
+          AttachStdout: true,
+          AttachStderr: true,
+          User: 'root'
+        });
+        
+        await groupmodExec.start({});
+      } catch (groupError) {
+        containerLogger.warn({ error: groupError.message }, 'Failed to change group GID, continuing');
+      }
+      
+      containerLogger.info({ currentUser }, 'Changed user UID to 1000');
+      return currentUser;
+    }
+  } catch (error) {
+    containerLogger.error({ error: error.message }, 'Error ensuring UID 1000 user');
+    throw error;
   }
 }
 
