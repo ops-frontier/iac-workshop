@@ -1,7 +1,7 @@
 services:
   nginx:
     image: nginx:latest
-    container_name: nginx
+    container_name: workspaces-nginx
     ports:
       - "80:80"
       - "443:443"
@@ -27,6 +27,7 @@ services:
       - /home:/home
       - ./nginx/conf.d:/opt/nginx-config:rw
     restart: unless-stopped
+    stop_grace_period: 20s
     networks:
       - internal
 
@@ -35,9 +36,5 @@ volumes:
 
 networks:
   internal:
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.19.0.0/16
-          gateway: 172.19.0.1
+    external: true
+    name: workspaces_internal

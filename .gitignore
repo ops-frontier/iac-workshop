@@ -13,6 +13,7 @@ override.tf.json
 *.retry
 ansible/.vault_pass
 ansible/group_vars/all/vault.yml
+ansible/inventory.ini
 
 # Python
 __pycache__/

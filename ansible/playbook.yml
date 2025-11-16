@@ -15,6 +15,12 @@
     # 未設定の場合は admin@<domain> をフォールバックとして使用
     email: "{{ lookup('ansible.builtin.env', 'DEPLOYER_EMAIL') | default('admin@' ~ domain) }}"
 
+  pre_tasks:
+    - name: Wait for SSH connection to be available
+      ansible.builtin.wait_for_connection:
+        delay: 3       # 最初のリトライまで10秒待機
+        timeout: 300    # タイムアウト（300秒 = 5分）
+
   tasks:
     - name: Ensure DOMAIN is provided via environment variable
       ansible.builtin.assert:
@@ -27,22 +33,27 @@
             export TF_VAR_domain=pcs.example.com
           Or run with: TF_VAR_domain=pcs.example.com ansible-playbook -i inventory.ini playbook.yml
 
-    - name: Wait for cloud-init to complete
-      ansible.builtin.command: cloud-init status --wait
-      changed_when: false
-
-    - name: Wait for dpkg lock to be released
-      ansible.builtin.shell: |
-        while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-          echo "Waiting for dpkg lock..."
-          sleep 5
-        done
-      changed_when: false
-
     - name: Update apt cache
       ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
+
+    - name: Upgrade all packages to the latest version
+      ansible.builtin.apt:
+        upgrade: dist
+        update_cache: true
+      register: apt_upgrade_result
+
+    - name: Reboot if kernel was upgraded
+      when: apt_upgrade_result.changed and 'linux-image' in apt_upgrade_result.stdout | default('')
+      block:
+        - name: Reboot
+          ansible.builtin.reboot:
+            reboot_timeout: 600
+        - name: Wait for SSH connection to be available
+          ansible.builtin.wait_for_connection:
+            delay: 10       # 最初のリトライまで10秒待機
+            timeout: 300    # タイムアウト（300秒 = 5分）
 
     - name: Install required system packages
       ansible.builtin.apt:
@@ -50,11 +61,13 @@
           - git
           - curl
           - certbot
-          - python3-certbot-nginx
           - apt-transport-https
           - ca-certificates
           - gnupg
           - lsb-release
+          - iputils-ping
+          - iptables
+          - iptables-persistent
         state: present
 
     - name: Add Docker GPG key
@@ -89,6 +102,31 @@
         name: docker
         state: started
         enabled: true
+
+    - name: Configure iptables firewall rules (after Docker to preserve DOCKER chain)
+      ansible.builtin.shell: |
+        # Set default policies
+        iptables -P INPUT ACCEPT
+        iptables -P FORWARD DROP
+        iptables -P OUTPUT ACCEPT
+        
+        # Flush only user chains, preserve Docker chains
+        iptables -F INPUT
+        iptables -F OUTPUT
+        # Do NOT flush FORWARD or delete chains (Docker needs them)
+        
+        # Basic INPUT rules
+        iptables -A INPUT -i lo -j ACCEPT
+        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+        iptables -A INPUT -p icmp -j ACCEPT
+        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        iptables -A INPUT -j DROP
+        
+        # Save rules
+        netfilter-persistent save
+      changed_when: true
 
     - name: Create codespace group (GID 1000)
       ansible.builtin.group:
@@ -172,14 +210,6 @@
         path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
       register: ssl_cert
 
-    - name: Stop system nginx for SSL certificate generation
-      ansible.builtin.systemd:
-        name: nginx
-        state: stopped
-      register: nginx_stop
-      failed_when: nginx_stop.failed and 'not be found' not in nginx_stop.msg
-      when: not ssl_cert.stat.exists
-
     - name: Stop any existing nginx containers for SSL certificate generation
       community.docker.docker_compose_v2:
         project_src: "{{ app_dir }}"
@@ -192,7 +222,7 @@
       ansible.builtin.command:
         cmd: >
           certbot certonly --standalone --non-interactive --agree-tos
-          --email {{ email }} -d {{ domain }}
+          --email {{ email }} -d {{ domain }} --staging
       when: not ssl_cert.stat.exists
       changed_when: true
 
@@ -227,13 +257,57 @@
     - name: Reset SSH connection to apply docker group membership
       ansible.builtin.meta: reset_connection
 
-    - name: Build and start Docker containers
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
-        build: always
+    - name: Create Docker network for workspaces
+      community.docker.docker_network:
+        name: workspaces_internal
+        driver: bridge
+        ipam_config:
+          - subnet: 172.19.0.0/16
+            gateway: 172.19.0.1
         state: present
+
+    - name: Create systemd service for Docker Compose
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/workspaces.service
+        content: |
+          [Unit]
+          Description=Workspaces Docker Compose Application
+          Requires=docker.service
+          After=docker.service
+          
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          WorkingDirectory={{ app_dir }}
+          ExecStart=/usr/bin/docker compose up -d
+          ExecStop=/usr/bin/docker compose stop
+          TimeoutStopSec=300
+          User=ubuntu
+          Group=ubuntu
+          
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+      register: workspaces_service
+
+    - name: Reload systemd daemon if service changed
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: workspaces_service.changed
+
+    - name: Build and start Docker containers
+      ansible.builtin.command:
+        cmd: docker compose build
+        chdir: "{{ app_dir }}"
       become: true
       become_user: ubuntu
+      changed_when: true
+
+    - name: Enable and start workspaces service
+      ansible.builtin.systemd:
+        name: workspaces
+        enabled: true
+        state: started
 
     - name: Wait for application to be ready
       ansible.builtin.wait_for:

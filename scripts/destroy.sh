@@ -27,10 +27,11 @@ echo -e "${RED}This action CANNOT be undone!${NC}"
 echo ""
 
 # Confirmation prompt
-echo -e "${YELLOW}To confirm, type 'destroy' and press Enter:${NC}"
-read -r CONFIRMATION
+echo -e "${YELLOW}Are you sure you want to destroy everything? (y/N):${NC} "
+read -n 1 -r CONFIRMATION
+echo
 
-if [ "$CONFIRMATION" != "destroy" ]; then
+if [ "$CONFIRMATION" != "y" ] && [ "$CONFIRMATION" != "Y" ]; then
     echo ""
     echo "Destroy cancelled."
     exit 0
@@ -81,8 +82,9 @@ fi
 
 # Step 5: Clean up state files (optional)
 echo ""
-echo -e "${YELLOW}Do you want to clean up Terraform state files? (y/N):${NC}"
-read -r CLEANUP
+echo -e "${YELLOW}Do you want to clean up Terraform state files? (y/N):${NC} "
+read -n 1 -r CLEANUP
+echo
 
 if [ "$CLEANUP" = "y" ] || [ "$CLEANUP" = "Y" ]; then
     echo "Removing Terraform state files..."

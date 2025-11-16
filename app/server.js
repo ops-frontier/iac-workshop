@@ -374,7 +374,11 @@ app.post('/api/workspaces', ensureAuthenticatedAPI, async (req, res) => {
         );
         
         // Update database with container ID and status
-        db.updateWorkspaceContainer(workspaceId, workspace.containerId, 'running');
+        const updateResult = db.updateWorkspaceContainer(workspaceId, workspace.containerId, 'running', 'building');
+        if (updateResult.changes === 0) {
+          userLogger.error({ workspace: name, containerId: workspace.containerId }, 'CRITICAL: Failed to update status to running after creation - concurrent modification');
+          // Continue anyway - container is running
+        }
         
         // Update devcontainer build status if available
         if (workspace.devcontainerBuildStatus) {
@@ -389,7 +393,12 @@ app.post('/api/workspaces', ensureAuthenticatedAPI, async (req, res) => {
         userLogger.error({ workspace: name, error: error.message, stack: error.stack }, 'Error creating workspace');
         
         // Update status to failed
-        db.updateWorkspaceStatus(workspaceId, 'failed');
+        const statusUpdate = db.updateWorkspaceStatus(workspaceId, 'failed', 'building');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: name }, 'CRITICAL: Failed to update status to failed after creation error - concurrent modification');
+          // Continue anyway - need to notify user
+        }
+        
         const failedWorkspace = db.getWorkspace(workspaceId);
         workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
       }
@@ -434,7 +443,8 @@ app.get('/api/workspaces/events', ensureAuthenticatedAPI, (req, res) => {
 app.get('/api/workspaces/:id', ensureAuthenticatedAPI, (req, res) => {
   const workspace = db.getWorkspace(req.params.id);
   
-  if (!workspace || workspace.user_id !== req.user.id) {
+  // User can view their own workspaces or released (shared) workspaces
+  if (!workspace || (workspace.user_id !== req.user.id && workspace.user_id !== null)) {
     return res.status(404).json({ error: 'Workspace not found' });
   }
   
@@ -448,9 +458,25 @@ app.delete('/api/workspaces/:id', ensureAuthenticatedAPI, async (req, res) => {
   try {
     const workspace = db.getWorkspace(req.params.id);
     
-    if (!workspace || workspace.user_id !== req.user.id) {
-      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
+    // User can delete their own workspaces or released workspaces (acquire then delete)
+    if (!workspace) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found');
       return res.status(404).json({ error: 'Workspace not found' });
+    }
+    
+    // If workspace is released (user_id is NULL), acquire it first
+    if (workspace.user_id === null) {
+      const acquireResult = db.acquireWorkspace(req.params.id, req.user.id, workspace.status);
+      if (acquireResult.changes === 0) {
+        userLogger.warn({ workspaceId: req.params.id, workspaceName: workspace.name }, 'Failed to acquire workspace for deletion - already acquired by another user');
+        return res.status(409).json({ error: 'Workspace is already being used by another user' });
+      }
+      userLogger.info({ workspace: workspace.name }, 'Workspace acquired for deletion');
+      // Refresh workspace data
+      workspace.user_id = req.user.id;
+    } else if (workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Access denied - workspace owned by another user');
+      return res.status(403).json({ error: 'Access denied' });
     }
     
     // Check if workspace is in a processing state
@@ -462,8 +488,13 @@ app.delete('/api/workspaces/:id', ensureAuthenticatedAPI, async (req, res) => {
     
     userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Starting workspace deletion');
     
-    // Update status to deleting
-    db.updateWorkspaceStatus(req.params.id, 'deleting');
+    // Update status to deleting with atomic check
+    const updateResult = db.updateWorkspaceStatus(req.params.id, 'deleting', workspace.status);
+    if (updateResult.changes === 0) {
+      userLogger.warn({ workspace: workspace.name, currentStatus: workspace.status }, 'Failed to update status to deleting - concurrent modification detected');
+      return res.status(409).json({ error: '操作が競合しました。ページを再読み込みしてください。' });
+    }
+    
     const deletingWorkspace = db.getWorkspace(req.params.id);
     workspaceEvents.publish(req.user.id, deletingWorkspace, 'updated');
     
@@ -523,6 +554,93 @@ app.delete('/api/workspaces/:id', ensureAuthenticatedAPI, async (req, res) => {
   }
 });
 
+// Acquire workspace (for released/stopped workspaces) and start immediately
+app.post('/api/workspaces/:id/acquire', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
+  try {
+    const workspace = db.getWorkspace(req.params.id);
+    
+    if (!workspace) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found');
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+    
+    // Can only acquire released workspaces (user_id is NULL)
+    if (workspace.user_id !== null) {
+      userLogger.warn({ workspaceId: req.params.id, workspaceName: workspace.name, ownerId: workspace.user_id }, 'Workspace is already owned');
+      return res.status(409).json({ error: 'Workspace is already owned by a user' });
+    }
+    
+    // Can only acquire stopped workspaces
+    if (workspace.status !== 'stopped') {
+      userLogger.warn({ workspace: workspace.name, status: workspace.status }, 'Workspace must be stopped to acquire');
+      return res.status(409).json({ error: 'Workspace must be stopped to acquire' });
+    }
+    
+    // Atomically acquire the workspace
+    const result = db.acquireWorkspace(req.params.id, req.user.id, 'stopped');
+    
+    if (result.changes === 0) {
+      userLogger.warn({ workspace: workspace.name }, 'Failed to acquire workspace - already acquired by another user');
+      return res.status(409).json({ error: 'Workspace was just acquired by another user' });
+    }
+    
+    userLogger.info({ workspace: workspace.name }, 'Workspace acquired successfully, starting immediately');
+    
+    // Update status to starting with atomic check
+    const updateResult = db.updateWorkspaceStatus(req.params.id, 'starting', 'stopped');
+    if (updateResult.changes === 0) {
+      userLogger.warn({ workspace: workspace.name }, 'Failed to update status to starting - concurrent modification detected');
+      return res.status(409).json({ error: '操作が競合しました。ページを再読み込みしてください。' });
+    }
+    
+    const startingWorkspace = db.getWorkspace(req.params.id);
+    
+    // Notify the new owner
+    workspaceEvents.publish(req.user.id, startingWorkspace, 'updated');
+    
+    // Notify all other users that this workspace is no longer available
+    workspaceEvents.broadcastToAll(startingWorkspace, 'updated');
+    
+    // Return immediately
+    res.json({ success: true, status: 'starting' });
+    
+    // Async start
+    (async () => {
+      try {
+        await workspaceManager.startWorkspace(workspace.container_id);
+        
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'running', 'starting');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to update status to running after start - concurrent modification');
+          // Continue anyway - container is running
+        }
+        
+        const runningWorkspace = db.getWorkspace(req.params.id);
+        workspaceEvents.publish(req.user.id, runningWorkspace, 'updated');
+        
+        userLogger.info({ workspace: workspace.name }, 'Workspace started successfully after acquisition');
+      } catch (error) {
+        userLogger.error({ workspace: workspace.name, error: error.message, stack: error.stack }, 'Error starting workspace after acquisition');
+        
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'stopped', 'starting');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to revert status to stopped after start failure - concurrent modification');
+        }
+        
+        const failedWorkspace = db.getWorkspace(req.params.id);
+        workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
+      }
+    })().catch(err => {
+      userLogger.error({ workspace: workspace.name, error: err.message, stack: err.stack }, 'Unhandled error in async workspace start after acquisition');
+    });
+  } catch (error) {
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error acquiring workspace');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start workspace
 app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) => {
   const userLogger = createUserLogger(req.user.username);
@@ -530,9 +648,24 @@ app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) =
   try {
     const workspace = db.getWorkspace(req.params.id);
     
-    if (!workspace || workspace.user_id !== req.user.id) {
-      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
+    if (!workspace) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found');
       return res.status(404).json({ error: 'Workspace not found' });
+    }
+    
+    // If workspace is released (user_id is NULL), acquire it first
+    if (workspace.user_id === null) {
+      const acquireResult = db.acquireWorkspace(req.params.id, req.user.id, workspace.status);
+      if (acquireResult.changes === 0) {
+        userLogger.warn({ workspaceId: req.params.id, workspaceName: workspace.name }, 'Failed to acquire workspace for starting - already acquired by another user');
+        return res.status(409).json({ error: 'Workspace is already being used by another user' });
+      }
+      userLogger.info({ workspace: workspace.name }, 'Workspace acquired for starting');
+      // Refresh workspace data
+      workspace.user_id = req.user.id;
+    } else if (workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Access denied - workspace owned by another user');
+      return res.status(403).json({ error: 'Access denied' });
     }
     
     // Check if workspace is in a processing state
@@ -550,8 +683,13 @@ app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) =
     
     userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Starting workspace');
     
-    // Update status to starting
-    db.updateWorkspaceStatus(req.params.id, 'starting');
+    // Update status to starting with atomic check
+    const updateResult = db.updateWorkspaceStatus(req.params.id, 'starting', workspace.status);
+    if (updateResult.changes === 0) {
+      userLogger.warn({ workspace: workspace.name, currentStatus: workspace.status }, 'Failed to update status to starting - concurrent modification detected');
+      return res.status(409).json({ error: '操作が競合しました。ページを再読み込みしてください。' });
+    }
+    
     const startingWorkspace = db.getWorkspace(req.params.id);
     workspaceEvents.publish(req.user.id, startingWorkspace, 'updated');
     
@@ -562,7 +700,12 @@ app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) =
     (async () => {
       try {
         await workspaceManager.startWorkspace(workspace.container_id);
-        db.updateWorkspaceStatus(req.params.id, 'running');
+        
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'running', 'starting');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to update status to running after start - concurrent modification');
+          // Continue anyway - container is running
+        }
         
         const runningWorkspace = db.getWorkspace(req.params.id);
         workspaceEvents.publish(req.user.id, runningWorkspace, 'updated');
@@ -571,7 +714,11 @@ app.post('/api/workspaces/:id/start', ensureAuthenticatedAPI, async (req, res) =
       } catch (error) {
         userLogger.error({ workspace: workspace.name, error: error.message, stack: error.stack }, 'Error starting workspace');
         
-        db.updateWorkspaceStatus(req.params.id, 'stopped');
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'stopped', 'starting');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to revert status to stopped after start failure - concurrent modification');
+        }
+        
         const failedWorkspace = db.getWorkspace(req.params.id);
         workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
       }
@@ -611,8 +758,13 @@ app.post('/api/workspaces/:id/stop', ensureAuthenticatedAPI, async (req, res) =>
     
     userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Stopping workspace');
     
-    // Update status to stopping
-    db.updateWorkspaceStatus(req.params.id, 'stopping');
+    // Update status to stopping with atomic check
+    const updateResult = db.updateWorkspaceStatus(req.params.id, 'stopping', workspace.status);
+    if (updateResult.changes === 0) {
+      userLogger.warn({ workspace: workspace.name, currentStatus: workspace.status }, 'Failed to update status to stopping - concurrent modification detected');
+      return res.status(409).json({ error: '操作が競合しました。ページを再読み込みしてください。' });
+    }
+    
     const stoppingWorkspace = db.getWorkspace(req.params.id);
     workspaceEvents.publish(req.user.id, stoppingWorkspace, 'updated');
     
@@ -623,16 +775,46 @@ app.post('/api/workspaces/:id/stop', ensureAuthenticatedAPI, async (req, res) =>
     (async () => {
       try {
         await workspaceManager.stopWorkspace(workspace.container_id);
-        db.updateWorkspaceStatus(req.params.id, 'stopped');
+        
+        // Release workspace (set user_id to NULL) when stopped successfully
+        const result = db.releaseWorkspace(req.params.id, req.user.id, 'stopping');
+        
+        if (result.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to release workspace - concurrent modification detected');
+          // Revert to running state
+          const revertUpdate = db.updateWorkspaceStatus(req.params.id, 'running', 'stopping');
+          if (revertUpdate.changes === 0) {
+            userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to revert status to running - concurrent modification');
+          }
+          const failedWorkspace = db.getWorkspace(req.params.id);
+          workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
+          return;
+        }
+        
+        // Update status to stopped
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'stopped', 'stopping');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to update status to stopped after stop - concurrent modification');
+          // Continue anyway - container is stopped
+        }
         
         const stoppedWorkspace = db.getWorkspace(req.params.id);
+        
+        // Notify the original owner about release
         workspaceEvents.publish(req.user.id, stoppedWorkspace, 'updated');
         
-        userLogger.info({ workspace: workspace.name }, 'Workspace stopped successfully');
+        // Notify all users about newly available workspace (broadcast)
+        workspaceEvents.broadcastToAll(stoppedWorkspace, 'updated');
+        
+        userLogger.info({ workspace: workspace.name }, 'Workspace stopped and released successfully');
       } catch (error) {
         userLogger.error({ workspace: workspace.name, error: error.message, stack: error.stack }, 'Error stopping workspace');
         
-        db.updateWorkspaceStatus(req.params.id, 'running');
+        const revertUpdate = db.updateWorkspaceStatus(req.params.id, 'running', 'stopping');
+        if (revertUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name, workspaceId: req.params.id }, 'CRITICAL: Failed to revert status to running after stop failure - concurrent modification');
+        }
+        
         const failedWorkspace = db.getWorkspace(req.params.id);
         workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
       }
@@ -666,8 +848,13 @@ app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res)
     
     userLogger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Starting workspace rebuild');
     
-    // Update status to building
-    db.updateWorkspaceStatus(req.params.id, 'building');
+    // Update status to building with atomic check
+    const updateResult = db.updateWorkspaceStatus(req.params.id, 'building', workspace.status);
+    if (updateResult.changes === 0) {
+      userLogger.warn({ workspace: workspace.name, currentStatus: workspace.status }, 'Failed to update status to building - concurrent modification detected');
+      return res.status(409).json({ error: '操作が競合しました。ページを再読み込みしてください。' });
+    }
+    
     const buildingWorkspace = db.getWorkspace(req.params.id);
     workspaceEvents.publish(req.user.id, buildingWorkspace, 'updated');
     
@@ -710,7 +897,11 @@ app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res)
         );
         
         // Update database with new container ID
-        db.updateWorkspaceContainer(req.params.id, newWorkspace.containerId, 'running');
+        const updateResult = db.updateWorkspaceContainer(req.params.id, newWorkspace.containerId, 'running', 'building');
+        if (updateResult.changes === 0) {
+          userLogger.error({ workspace: workspace.name, containerId: newWorkspace.containerId }, 'CRITICAL: Failed to update status to running after rebuild - concurrent modification');
+          // Continue anyway - container is running
+        }
         
         // Update devcontainer build status if available
         if (newWorkspace.devcontainerBuildStatus) {
@@ -724,7 +915,12 @@ app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res)
       } catch (error) {
         userLogger.error({ workspace: workspace.name, error: error.message, stack: error.stack }, 'Error rebuilding workspace');
         
-        db.updateWorkspaceStatus(req.params.id, 'failed');
+        const statusUpdate = db.updateWorkspaceStatus(req.params.id, 'failed', 'building');
+        if (statusUpdate.changes === 0) {
+          userLogger.error({ workspace: workspace.name }, 'CRITICAL: Failed to update status to failed after rebuild error - concurrent modification');
+          // Continue anyway - need to notify user
+        }
+        
         const failedWorkspace = db.getWorkspace(req.params.id);
         workspaceEvents.publish(req.user.id, failedWorkspace, 'updated');
       }
@@ -880,6 +1076,60 @@ app.get('/health', (req, res) => {
 db.initialize();
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   logger.info({ port: PORT, domain: DOMAIN }, 'Workspaces server started');
 });
+
+// Graceful shutdown handler
+async function gracefulShutdown(signal) {
+  logger.info({ signal }, 'Received shutdown signal, starting graceful shutdown');
+  
+  // Stop accepting new connections
+  server.close(() => {
+    logger.info('HTTP server closed');
+  });
+  
+  try {
+    // Get all running workspaces
+    const allWorkspaces = db.getAllWorkspaces();
+    const runningWorkspaces = allWorkspaces.filter(ws => ws.status === 'running' && ws.user_id !== null);
+    
+    logger.info({ count: runningWorkspaces.length }, 'Stopping all running workspaces');
+    
+    // Stop all running workspaces in parallel
+    const stopPromises = runningWorkspaces.map(async (workspace) => {
+      try {
+        logger.info({ workspace: workspace.name, containerId: workspace.container_id }, 'Stopping workspace');
+        
+        // Stop the container
+        if (workspace.container_id) {
+          await workspaceManager.stopWorkspace(workspace.container_id);
+        }
+        
+        // Release workspace (set user_id to NULL)
+        db.releaseWorkspace(workspace.id, workspace.user_id, 'running');
+        
+        // Update status to stopped
+        db.updateWorkspaceStatus(workspace.id, 'stopped');
+        
+        logger.info({ workspace: workspace.name }, 'Workspace stopped and released');
+      } catch (error) {
+        logger.error({ workspace: workspace.name, error: error.message }, 'Error stopping workspace during shutdown');
+      }
+    });
+    
+    await Promise.all(stopPromises);
+    
+    logger.info('All workspaces stopped successfully');
+  } catch (error) {
+    logger.error({ error: error.message, stack: error.stack }, 'Error during graceful shutdown');
+  }
+  
+  // Exit process
+  logger.info('Graceful shutdown complete, exiting');
+  process.exit(0);
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

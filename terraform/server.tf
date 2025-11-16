@@ -1,9 +1,6 @@
-# Get the latest Ubuntu 24.04 image (cloud-init enabled)
+# Get the latest Ubuntu 24.04 image (standard image)
 data "sakuracloud_archive" "ubuntu" {
-  filter {
-    # Ubuntuディストリビューションで、かつ cloud-init対応のタグを持つアーカイブを検索
-    id = "113701786672"
-  }
+  os_type = "ubuntu2404"
 }
 
 # SSH Key resource
@@ -12,10 +9,21 @@ resource "sakuracloud_ssh_key" "main" {
   public_key = var.ssh_public_key
 }
 
-# Packet Filter (Firewall) - DHCPを許可してIPアドレス付与を可能にする
+# Startup script (Note) for initial configuration
+resource "sakuracloud_note" "startup" {
+  name = "${var.server_name}-startup-script"
+  
+  content = templatefile("${path.module}/startup-script.sh", {
+    domain               = var.domain
+    github_client_id     = var.github_client_id
+    github_client_secret = var.github_client_secret
+  })
+}
+
+# Packet Filter (Firewall)
 resource "sakuracloud_packet_filter" "main" {
   name        = "${var.server_name}-filter"
-  description = "Packet filter for Workspaces with DHCP support"
+  description = "Packet filter for Workspaces"
 
   # Fragment packets (重要: フラグメント化されたパケットの通信のために必須)
   # 参考: https://manual.sakura.ad.jp/cloud/network/packet-filter.html
@@ -23,22 +31,6 @@ resource "sakuracloud_packet_filter" "main" {
     protocol    = "fragment"
     allow       = true
     description = "Allow all fragment packets"
-  }
-
-  # DHCP (重要: cloud-initイメージでIPアドレスを取得するために必須)
-  # 参考: https://manual.sakura.ad.jp/cloud/network/packet-filter.html
-  expression {
-    protocol         = "udp"
-    destination_port = "67"
-    allow            = true
-    description      = "Allow DHCP (bootps) - required for IP address assignment"
-  }
-
-  expression {
-    protocol         = "udp"
-    destination_port = "68"
-    allow            = true
-    description      = "Allow DHCP (bootpc) - required for IP address assignment"
   }
 
   # Inbound rules
@@ -171,7 +163,7 @@ resource "sakuracloud_packet_filter" "main" {
   }
 }
 
-# Disk - cloud-init対応アーカイブを使用
+# Disk - 通常のアーカイブを使用
 resource "sakuracloud_disk" "main" {
   name              = "${var.server_name}-disk"
   source_archive_id = data.sakuracloud_archive.ubuntu.id
@@ -187,19 +179,26 @@ resource "sakuracloud_server" "main" {
 
   disks = [sakuracloud_disk.main.id]
 
-  # パケットフィルタを適用（DHCP許可でIPアドレス付与が可能）
+  # パケットフィルタを適用
   # iptablesと組み合わせて多層防御
   network_interface {
     upstream         = "shared"
     packet_filter_id = sakuracloud_packet_filter.main.id
   }
 
-  # cloud-init対応アーカイブの場合、user_dataを使用（disk_edit_parameterは非対応）
-  # 参考: https://manual.sakura.ad.jp/cloud/storage/modifydisk/about.html
-  user_data = templatefile("${path.module}/cloud-init.yaml", {
-    domain               = var.domain
-    github_client_id     = var.github_client_id
-    github_client_secret = var.github_client_secret
-    ssh_public_key       = var.ssh_public_key
-  })
+  # 通常イメージの場合、disk_edit_parameterを使用してディスクを編集
+  disk_edit_parameter {
+    disable_pw_auth = true
+    password = var.server_password
+    
+    ssh_key_ids = [sakuracloud_ssh_key.main.id]
+    
+    # ホスト名の設定
+    hostname = var.server_name
+    
+    # 起動時スクリプト（初期設定）
+    note {
+      id = sakuracloud_note.startup.id
+    }
+  }
 }

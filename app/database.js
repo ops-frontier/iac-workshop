@@ -21,7 +21,7 @@ function initialize() {
 
     CREATE TABLE IF NOT EXISTS workspaces (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id TEXT NOT NULL,
+      user_id TEXT,
       name TEXT NOT NULL,
       repo_url TEXT NOT NULL,
       container_id TEXT,
@@ -30,10 +30,11 @@ function initialize() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id),
-      UNIQUE(user_id, name)
+      UNIQUE(name)
     );
 
     CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id);
+    CREATE INDEX IF NOT EXISTS idx_workspaces_name ON workspaces(name);
   `);
   
   // Migration: Add devcontainer_build_status column if it doesn't exist
@@ -61,6 +62,58 @@ function initialize() {
   } catch (error) {
     console.error('Migration error:', error);
   }
+  
+  // Migration: Make user_id nullable and change UNIQUE constraint for workspace sharing
+  // SQLite doesn't support modifying constraints directly, so we need to recreate the table
+  try {
+    const columns = db.prepare("PRAGMA table_info(workspaces)").all();
+    const userIdColumn = columns.find(col => col.name === 'user_id');
+    
+    // Check if user_id is still NOT NULL (notnull === 1)
+    if (userIdColumn && userIdColumn.notnull === 1) {
+      console.log('Migration: Converting workspaces table to support shared workspaces...');
+      
+      // Create new table with nullable user_id and name-only unique constraint
+      db.exec(`
+        CREATE TABLE workspaces_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id TEXT,
+          name TEXT NOT NULL,
+          repo_url TEXT NOT NULL,
+          container_id TEXT,
+          status TEXT DEFAULT 'stopped',
+          devcontainer_build_status TEXT DEFAULT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id),
+          UNIQUE(name)
+        );
+      `);
+      
+      // Copy data from old table
+      db.exec(`
+        INSERT INTO workspaces_new (id, user_id, name, repo_url, container_id, status, devcontainer_build_status, created_at, updated_at)
+        SELECT id, user_id, name, repo_url, container_id, status, devcontainer_build_status, created_at, updated_at
+        FROM workspaces;
+      `);
+      
+      // Drop old table
+      db.exec('DROP TABLE workspaces;');
+      
+      // Rename new table
+      db.exec('ALTER TABLE workspaces_new RENAME TO workspaces;');
+      
+      // Recreate indexes
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id);
+        CREATE INDEX IF NOT EXISTS idx_workspaces_name ON workspaces(name);
+      `);
+      
+      console.log('Migration: Successfully converted workspaces table to support shared workspaces');
+    }
+  } catch (error) {
+    console.error('Migration error (workspace sharing):', error);
+  }
 }
 
 function upsertUser(user) {
@@ -85,7 +138,8 @@ function getUserById(id) {
 }
 
 function getUserWorkspaces(userId) {
-  const stmt = db.prepare('SELECT * FROM workspaces WHERE user_id = ? ORDER BY created_at DESC');
+  // Get workspaces owned by user OR available (released) workspaces
+  const stmt = db.prepare('SELECT * FROM workspaces WHERE user_id = ? OR user_id IS NULL ORDER BY created_at DESC');
   return stmt.all(userId);
 }
 
@@ -116,12 +170,24 @@ function getWorkspace(id) {
   return stmt.get(id);
 }
 
-function updateWorkspaceStatus(id, status) {
+function updateWorkspaceStatus(id, status, expectedStatus = null) {
+  // If expectedStatus is provided, perform atomic update with status check
+  if (expectedStatus !== null) {
+    const stmt = db.prepare('UPDATE workspaces SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?');
+    return stmt.run(status, id, expectedStatus);
+  }
+  // Otherwise, update without check (for backward compatibility or force update)
   const stmt = db.prepare('UPDATE workspaces SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
   return stmt.run(status, id);
 }
 
-function updateWorkspaceContainer(id, containerId, status) {
+function updateWorkspaceContainer(id, containerId, status, expectedStatus = null) {
+  // If expectedStatus is provided, perform atomic update with status check
+  if (expectedStatus !== null) {
+    const stmt = db.prepare('UPDATE workspaces SET container_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?');
+    return stmt.run(containerId, status, id, expectedStatus);
+  }
+  // Otherwise, update without check
   const stmt = db.prepare('UPDATE workspaces SET container_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
   return stmt.run(containerId, status, id);
 }
@@ -129,6 +195,29 @@ function updateWorkspaceContainer(id, containerId, status) {
 function getWorkspaceByName(userId, name) {
   const stmt = db.prepare('SELECT * FROM workspaces WHERE user_id = ? AND name = ?');
   return stmt.get(userId, name);
+}
+
+function getWorkspaceByNameOnly(name) {
+  const stmt = db.prepare('SELECT * FROM workspaces WHERE name = ?');
+  return stmt.get(name);
+}
+
+function updateWorkspaceOwner(id, userId, expectedStatus) {
+  // Atomic update with expected status check
+  const stmt = db.prepare('UPDATE workspaces SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?');
+  return stmt.run(userId, id, expectedStatus);
+}
+
+function releaseWorkspace(id, expectedUserId, expectedStatus) {
+  // Atomic update: release workspace (set user_id to NULL) only if owned by expectedUserId and status matches
+  const stmt = db.prepare('UPDATE workspaces SET user_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND status = ?');
+  return stmt.run(id, expectedUserId, expectedStatus);
+}
+
+function acquireWorkspace(id, userId, expectedStatus) {
+  // Atomic update: acquire workspace (set user_id) only if currently released (user_id IS NULL) and status matches
+  const stmt = db.prepare('UPDATE workspaces SET user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id IS NULL AND status = ?');
+  return stmt.run(userId, id, expectedStatus);
 }
 
 function deleteWorkspace(id) {
@@ -150,8 +239,12 @@ module.exports = {
   createWorkspace,
   getWorkspace,
   getWorkspaceByName,
+  getWorkspaceByNameOnly,
   updateWorkspaceStatus,
   updateWorkspaceContainer,
   updateWorkspaceDevcontainerBuildStatus,
+  updateWorkspaceOwner,
+  releaseWorkspace,
+  acquireWorkspace,
   deleteWorkspace
 };

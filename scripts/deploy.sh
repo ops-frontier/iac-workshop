@@ -137,80 +137,7 @@ deploy_terraform() {
             echo "  ip a show ens3"
             exit 1
         fi
-        
-        # ステップ2: SSH接続とcloud-init状態確認
-        echo ""
-        echo "🔍 ステップ2: SSH接続とcloud-init状態の確認中..."
-        MAX_CLOUD_ATTEMPTS=12  # 1分間（5秒間隔で12回）
-        CLOUD_ATTEMPT=0
-        CLOUD_INIT_DONE=false
-        
-        while [ $CLOUD_ATTEMPT -lt $MAX_CLOUD_ATTEMPTS ]; do
-            CLOUD_ATTEMPT=$((CLOUD_ATTEMPT + 1))
-            ELAPSED=$((CLOUD_ATTEMPT * 5))
-            
-            # 進捗表示
-            printf "\r   経過時間: %d秒 / 60秒 - cloud-init試行 %d/%d..." $ELAPSED $CLOUD_ATTEMPT $MAX_CLOUD_ATTEMPTS
-            
-            # SSH接続でcloud-init状態を確認
-            # 注意: スクリプト全体で `set -e` が有効なため、
-            # ssh が非0終了した場合にスクリプト全体が終了しないよう
-            # 一時的にエラーストップを無効化してから実行します。
-            set +e
-            CLOUD_STATUS=$(ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes ubuntu@"$SERVER_IP" "sudo cloud-init status" 2>&1)
-            SSH_EXIT_CODE=$?
-            set -e
-            
-            if [ $SSH_EXIT_CODE -ne 0 ]; then
-                echo ""
-                echo "❌ SSH接続エラー:"
-                echo "$CLOUD_STATUS"
-                echo ""
-                echo "Webコンソールで確認してください:"
-                echo "  https://secure.sakura.ad.jp/cloud/"
-                echo ""
-                echo "Webコンソールからログイン:"
-                echo "  ユーザー名: ubuntu"
-                echo "  パスワード: TempPassword123!"
-                exit 1
-            fi
-            
-            # cloud-init status の出力に "done" が含まれているかチェック
-            if echo "$CLOUD_STATUS" | grep -q "done"; then
-                echo ""
-                echo "✅ cloud-initが完了しました！（${ELAPSED}秒後）"
-                echo "cloud-init status: $CLOUD_STATUS"
-                CLOUD_INIT_DONE=true
-                break
-            fi
-            
-            sleep 5
-        done
-        
-        echo ""
-        
-        if [ "$CLOUD_INIT_DONE" = false ]; then
-            echo "❌ エラー: 1分経ってもcloud-initが完了しません"
-            echo ""
-            echo "現在のcloud-init状態: $CLOUD_STATUS"
-            echo ""
-            echo "Webコンソールで確認してください:"
-            echo "  https://secure.sakura.ad.jp/cloud/"
-            echo ""
-            echo "考えられる原因:"
-            echo "  - cloud-initの処理に時間がかかっている"
-            echo "  - cloud-initでエラーが発生している"
-            echo ""
-            echo "Webコンソールからログイン:"
-            echo "  ユーザー名: ubuntu"
-            echo "  パスワード: TempPassword123!"
-            echo ""
-            echo "確認コマンド:"
-            echo "  sudo cloud-init status"
-            echo "  sudo cloud-init logs"
-            echo "  sudo journalctl -u cloud-init"
-            exit 1
-        fi
+        sleep 3 # 待機時間を追加してSSHポートの安定を待つ
         
         echo ""
         echo "✅ サーバーの接続確認が完了しました"
@@ -219,21 +146,8 @@ deploy_terraform() {
         echo "次のステップ:"
         echo "1. 上記のIPアドレスをドメインのAレコードに設定してください"
         echo "2. DNSの伝播を待ってください（数分〜数時間）"
-        echo "3. ansible/inventory.ini が自動更新されました"
-        echo "4. Ansibleを実行してください: ./scripts/deploy.sh ansible"
-        
-        # Ansibleインベントリの自動更新
-        cd ../ansible
-        cat > inventory.ini << EOF
-[workspaces]
-${SERVER_IP} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/id_rsa
-
-[workspaces:vars]
-ansible_python_interpreter=/usr/bin/python3
-EOF
-        echo ""
-        echo "✅ Ansible inventory.ini を更新しました"
-        cd ../terraform
+        echo "3. Ansibleを実行してください: ./scripts/deploy.sh ansible"
+        echo "   (inventory.ini は自動生成されます）"
     else
         echo "デプロイをキャンセルしました"
         exit 0
@@ -249,12 +163,28 @@ deploy_ansible() {
     
     cd ansible
     
-    # インベントリファイルのチェック
-    if ! grep -q "ansible_user=ubuntu" inventory.ini; then
-        echo "⚠️  inventory.ini にサーバー情報が設定されていないようです"
-        echo "terraform outputからIPアドレスをコピーしてinventory.iniを編集してください"
+    # Terraformからサーバー情報を取得してinventory.iniを生成
+    echo "📝 inventory.ini を生成中..."
+    cd ../terraform
+    SERVER_IP=$(terraform output -raw server_ip 2>/dev/null || echo "")
+    cd ../ansible
+    
+    if [ -z "$SERVER_IP" ]; then
+        echo "❌ エラー: TerraformからサーバーIPアドレスを取得できませんでした"
+        echo "先に Terraform デプロイを実行してください: ./scripts/deploy.sh terraform"
         exit 1
     fi
+    
+    # inventory.ini を生成
+    cat > inventory.ini << EOF
+[workspaces]
+${SERVER_IP} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+[workspaces:vars]
+ansible_python_interpreter=/usr/bin/python3
+EOF
+    
+    echo "✅ inventory.ini を生成しました (IP: $SERVER_IP)"
     
     # Ansibleコレクションのインストール
     echo "Ansibleコレクションをインストール中..."

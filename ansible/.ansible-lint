@@ -1,0 +1,4 @@
+---
+# Ansible Lint configuration
+skip_list:
+  - no-handler  # Allow restart tasks without handlers when immediate restart is needed

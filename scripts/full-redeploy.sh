@@ -129,11 +129,6 @@ echo -e "${YELLOW}Step 9: Testing connectivity${NC}"
 echo "Testing SSH connection..."
 if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "echo 'SSH connection successful'" 2>&1 | grep -q "SSH connection successful"; then
     echo -e "${GREEN}✓ SSH connection successful${NC}"
-    
-    # Check cloud-init status
-    echo ""
-    echo "Checking cloud-init status..."
-    ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no ubuntu@"$SERVER_IP" "sudo cloud-init status" 2>&1 || echo -e "${YELLOW}⚠ Could not check cloud-init status${NC}"
 else
     echo -e "${YELLOW}⚠ SSH connection failed or cloud-init still running${NC}"
     echo ""

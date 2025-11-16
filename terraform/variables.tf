@@ -73,3 +73,11 @@ variable "network_cidr" {
   type        = string
   default     = "192.168.0.0/24"
 }
+
+# Server password (for console login)
+variable "server_password" {
+  description = "Server password for ubuntu user"
+  type        = string
+  sensitive   = true
+  default     = "TempPassword123!"
+}

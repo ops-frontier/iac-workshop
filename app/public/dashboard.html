@@ -403,7 +403,7 @@
             <div class="header-logo">
                 <img src="/logo.svg" alt="Workspaces Logo">
             </div>
-            <div class="header-title">ダッシュボード</div>
+            <div class="header-title">防災情報管理システム IaC 工房</div>
             <div class="header-right">
                 <div class="user-info">
                     <img id="userAvatar" class="user-avatar" src="" alt="User Avatar">
@@ -531,10 +531,27 @@
                     break;
                 case 'updated':
                     const index = workspaces.findIndex(w => w.id === data.workspace.id);
+                    const workspace = data.workspace;
+                    
+                    // Check if this workspace should be shown to the current user
+                    // (owned by user OR released/shared)
+                    const shouldShow = workspace.user_id === null || index >= 0;
+                    
                     if (index >= 0) {
-                        workspaces[index] = data.workspace;
+                        // Workspace exists in list
+                        if (shouldShow) {
+                            // Update it
+                            workspaces[index] = workspace;
+                        } else {
+                            // Remove it (user no longer has access)
+                            workspaces.splice(index, 1);
+                        }
                     } else {
-                        workspaces.unshift(data.workspace);
+                        // Workspace doesn't exist in list
+                        if (shouldShow) {
+                            // Add it (newly released/shared workspace)
+                            workspaces.unshift(workspace);
+                        }
                     }
                     renderWorkspaces();
                     break;
@@ -571,17 +588,28 @@
             const statusClass = `status-${ws.status}`;
             const statusText = getStatusText(ws.status);
             const isProcessing = ['building', 'starting', 'stopping', 'deleting'].includes(ws.status);
-            const canOpen = ws.status === 'running';
-            const canStart = ws.status === 'stopped';
-            const canStop = ws.status === 'running';
-            const canDelete = ['stopped', 'failed'].includes(ws.status);
+            const isOwned = ws.user_id !== null;
+            const isReleased = ws.user_id === null;
             const isFailed = ws.status === 'failed';
+            
+            // Button availability based on state transition diagram
+            const canOpen = ws.status === 'running' && isOwned;
+            const canStop = ws.status === 'running' && isOwned;
+            const canDelete = (ws.status === 'stopped' || ws.status === 'failed') && (isOwned || isReleased);
+            const canAcquire = ws.status === 'stopped' && isReleased;
+            const canRebuild = !isProcessing && isOwned;
             
             // Get devcontainer build status badge
             let devcontainerBuildBadge = '';
             if (ws.devcontainer_build_status) {
                 const buildStatusInfo = getDevcontainerBuildStatusInfo(ws.devcontainer_build_status);
                 devcontainerBuildBadge = `<span class="devcontainer-build-status ${buildStatusInfo.class}" title="${buildStatusInfo.title}">${buildStatusInfo.text}</span>`;
+            }
+            
+            // Ownership badge
+            let ownershipBadge = '';
+            if (isReleased) {
+                ownershipBadge = '<span class="workspace-status" style="background: #dbeafe; color: #1e40af;">共有</span>';
             }
             
             return `
@@ -594,39 +622,45 @@
                             ${statusText}
                         </span>
                         ${devcontainerBuildBadge}
+                        ${ownershipBadge}
                     </div>
                     <div class="workspace-actions">
-                        <button class="btn btn-primary" 
-                                onclick="openWorkspace('${ws.name}')" 
-                                ${!canOpen ? 'disabled' : ''}>
-                            開く
-                        </button>
-                        <button class="btn btn-success" 
-                                onclick="startWorkspace(${ws.id})" 
-                                ${!canStart || isFailed ? 'disabled' : ''}>
-                            起動
-                        </button>
-                        <button class="btn btn-warning" 
-                                onclick="stopWorkspace(${ws.id})" 
-                                ${!canStop || isFailed ? 'disabled' : ''}>
-                            停止
-                        </button>
+                        ${isReleased ? `
+                            <button class="btn btn-success" 
+                                    onclick="acquireWorkspace(${ws.id})" 
+                                    ${!canAcquire ? 'disabled' : ''}>
+                                取得して起動
+                            </button>
+                        ` : `
+                            <button class="btn btn-primary" 
+                                    onclick="openWorkspace('${ws.name}')" 
+                                    ${!canOpen ? 'disabled' : ''}>
+                                開く
+                            </button>
+                            <button class="btn btn-warning" 
+                                    onclick="stopWorkspace(${ws.id})" 
+                                    ${!canStop || isFailed ? 'disabled' : ''}>
+                                解放
+                            </button>
+                        `}
                         <button class="btn btn-danger" 
                                 onclick="deleteWorkspace(${ws.id})" 
                                 ${!canDelete ? 'disabled' : ''}>
                             削除
                         </button>
-                        <div style="width: 100%; height: 0;"></div>
-                        <button class="btn btn-info" 
-                                onclick="rebuildWorkspace(${ws.id})"
-                                ${isProcessing ? 'disabled' : ''}>
-                            再ビルド
-                        </button>
-                        <button class="btn btn-secondary" 
-                                onclick="downloadBuildLog(${ws.id}, '${ws.name}')"
-                                ${isProcessing ? 'disabled' : ''}>
-                            ログ
-                        </button>
+                        ${!isReleased ? `
+                            <div style="width: 100%; height: 0;"></div>
+                            <button class="btn btn-info" 
+                                    onclick="rebuildWorkspace(${ws.id})"
+                                    ${!canRebuild ? 'disabled' : ''}>
+                                再ビルド
+                            </button>
+                            <button class="btn btn-secondary" 
+                                    onclick="downloadBuildLog(${ws.id}, '${ws.name}')"
+                                    ${isProcessing ? 'disabled' : ''}>
+                                ログ
+                            </button>
+                        ` : ''}
                     </div>
                 </div>
             `;
@@ -839,8 +873,12 @@
             });
         }
 
-        // Stop workspace
+        // Stop workspace (release)
         function stopWorkspace(id) {
+            if (!confirm('ワークスペースを停止して解放しますか？停止後は他のユーザーが利用できるようになります。')) {
+                return;
+            }
+            
             fetch(`/api/workspaces/${id}/stop`, {
                 method: 'POST'
             })
@@ -863,6 +901,35 @@
             .catch(error => {
                 if (error.message !== 'Unauthorized') {
                     console.error('Error stopping workspace:', error);
+                }
+            });
+        }
+
+        // Acquire workspace (automatically starts)
+        function acquireWorkspace(id) {
+            fetch(`/api/workspaces/${id}/acquire`, {
+                method: 'POST'
+            })
+            .then(response => {
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    throw new Error('Unauthorized');
+                }
+                if (!response.ok) {
+                    return response.json().then(err => {
+                        throw new Error(err.error || 'ワークスペースの取得に失敗しました');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Workspace acquired and starting:', data);
+            })
+            .catch(error => {
+                if (error.message !== 'Unauthorized') {
+                    console.error('Error acquiring workspace:', error);
+                    alert('エラー: ' + error.message);
                 }
             });
         }

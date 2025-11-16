@@ -84,6 +84,49 @@ class WorkspaceEventEmitter extends EventEmitter {
   }
 
   /**
+   * Broadcast a workspace update to all connected clients (all users)
+   * Used for notifying about released/acquired workspaces
+   * @param {Object} workspace - Workspace data
+   * @param {string} eventType - Event type (created, updated, deleted)
+   */
+  broadcastToAll(workspace, eventType = 'updated') {
+    const data = {
+      type: eventType,
+      workspace: workspace,
+      timestamp: new Date().toISOString()
+    };
+
+    const message = `data: ${JSON.stringify(data)}\n\n`;
+    
+    let totalClients = 0;
+    
+    this.clients.forEach((clients, userId) => {
+      const deadClients = new Set();
+      
+      clients.forEach(res => {
+        try {
+          res.write(message);
+          totalClients++;
+        } catch (error) {
+          logger.warn({ userId, error: error.message }, 'Failed to send SSE broadcast, marking client as dead');
+          deadClients.add(res);
+        }
+      });
+      
+      // Clean up dead clients
+      deadClients.forEach(res => {
+        clients.delete(res);
+      });
+      
+      if (clients.size === 0) {
+        this.clients.delete(userId);
+      }
+    });
+    
+    logger.debug({ eventType, workspaceId: workspace.id, totalClients }, 'SSE event broadcasted to all users');
+  }
+
+  /**
    * Send a heartbeat to all connected clients
    */
   heartbeat() {

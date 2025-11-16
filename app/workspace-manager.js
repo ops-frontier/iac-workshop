@@ -160,17 +160,56 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
   let tempDevcontainerCreated = false;
   let originalDevcontainerBackup = null;
   
+  // Always backup original devcontainer.json if it exists (to add runArgs with container name)
+  const devcontainerDir = path.join(workspaceDir, '.devcontainer');
+  const devcontainerPath = path.join(devcontainerDir, 'devcontainer.json');
+  
+  if (hasDevcontainer && !retryWithDefault) {
+    try {
+      const originalContent = await fs.readFile(devcontainerPath, 'utf8');
+      originalDevcontainerBackup = originalContent;
+      buildLogger.debug('Original devcontainer.json backed up');
+      
+      // Parse and modify devcontainer.json to add container name and network
+      const devcontainerConfig = JSON.parse(originalContent);
+      devcontainerConfig.runArgs = devcontainerConfig.runArgs || [];
+      
+      // Remove existing --name and --network options if present
+      const filteredRunArgs = [];
+      let i = 0;
+      while (i < devcontainerConfig.runArgs.length) {
+        const arg = devcontainerConfig.runArgs[i];
+        if (arg === '--name' || arg === '--network') {
+          // Skip this argument and its value
+          i += 2;
+        } else {
+          filteredRunArgs.push(arg);
+          i += 1;
+        }
+      }
+      
+      // Add our --name and --network options
+      devcontainerConfig.runArgs = [
+        ...filteredRunArgs,
+        '--name', workspaceName,
+        '--network', networkName
+      ];
+      
+      await fs.writeFile(devcontainerPath, JSON.stringify(devcontainerConfig, null, 2));
+      buildLogger.info({ containerName: workspaceName, networkName }, 'Added container name and network to devcontainer.json runArgs');
+      await writeToBuildLog(buildLogFile, `Added --name ${workspaceName} and --network ${networkName} to devcontainer.json runArgs\n`);
+    } catch (error) {
+      buildLogger.warn({ error: error.message }, 'Failed to modify devcontainer.json, continuing without container name/network');
+    }
+  }
+  
   if (!hasDevcontainer || retryWithDefault) {
     const defaultImage = 'mcr.microsoft.com/devcontainers/universal:2-linux';
     buildLogger.info({ defaultImage }, retryWithDefault ? 'Using default image as fallback' : 'Using default image');
     await writeToBuildLog(buildLogFile, `Using default image: ${defaultImage}\n`);
     
-    // Create .devcontainer directory and devcontainer.json
-    const devcontainerDir = path.join(workspaceDir, '.devcontainer');
-    const devcontainerPath = path.join(devcontainerDir, 'devcontainer.json');
-    
     // Backup original devcontainer.json if retrying
-    if (retryWithDefault && hasDevcontainer) {
+    if (retryWithDefault && hasDevcontainer && !originalDevcontainerBackup) {
       try {
         const originalContent = await fs.readFile(devcontainerPath, 'utf8');
         originalDevcontainerBackup = originalContent;
@@ -186,7 +225,10 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       const devcontainerConfig = {
         name: workspaceName,
         image: defaultImage,
-
+        runArgs: [
+          '--name', workspaceName,
+          '--network', networkName
+        ],
         customizations: {
           vscode: {
             settings: {},
@@ -359,77 +401,15 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       containerInfo = await containerObj.inspect();
     }
     
-    // Connect container to our Docker network if not already connected
+    // Verify container is on the correct network (network should already be configured via runArgs)
     const networkName = 'workspaces_internal';
+    containerInfo = await containerObj.inspect();
     let networks = containerInfo.NetworkSettings.Networks;
     
-    if (!networks[networkName]) {
-      containerLogger.info({ networkName }, 'Connecting container to network');
-      try {
-        const network = docker.getNetwork(networkName);
-        await network.connect({
-          Container: containerId
-        });
-        containerLogger.info({ networkName }, 'Container connected to network');
-      } catch (error) {
-        // Check if error is about already being connected or IP conflict
-        if (error.message.includes('already exists') || error.message.includes('conflicts with existing route')) {
-          containerLogger.warn({ networkName, error: error.message }, 'Network connection issue (container may already be on network), continuing');
-        } else {
-          containerLogger.error({ networkName, error: error.message }, 'Failed to connect to network');
-          throw error;
-        }
-      }
+    if (networks[networkName]) {
+      containerLogger.info({ networkName }, 'Container is on the correct network');
     } else {
-      containerLogger.debug({ networkName }, 'Container already connected to network');
-    }
-    
-    // Refresh container info after network connection to get updated network settings
-    containerInfo = await containerObj.inspect();
-    networks = containerInfo.NetworkSettings.Networks;
-    
-    // Disconnect from default bridge network to avoid routing conflicts
-    // This must be done AFTER connecting to our network and refreshing container info
-    if (networks['bridge']) {
-      containerLogger.info('Disconnecting from default bridge network');
-      try {
-        const bridgeNetwork = docker.getNetwork('bridge');
-        await bridgeNetwork.disconnect({
-          Container: containerId,
-          Force: false
-        });
-        containerLogger.info('Disconnected from bridge network');
-        
-        // Refresh container info again after disconnection
-        containerInfo = await containerObj.inspect();
-        networks = containerInfo.NetworkSettings.Networks;
-        
-        // Verify bridge is actually disconnected
-        if (!networks['bridge']) {
-          containerLogger.info('Verified: bridge network disconnected successfully');
-          
-          // Restart container to ensure network interfaces are properly configured
-          // This is necessary because disconnecting from bridge may leave the container
-          // without a properly configured eth0 interface for the new network
-          containerLogger.info('Restarting container to refresh network interfaces');
-          await containerObj.restart();
-          containerLogger.info('Container restarted successfully');
-          
-          // Wait a moment for network to stabilize
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          // Refresh container info after restart
-          containerInfo = await containerObj.inspect();
-          containerLogger.info('Container network interfaces refreshed after restart');
-        } else {
-          containerLogger.warn('Warning: bridge network still appears in container networks');
-        }
-      } catch (bridgeError) {
-        // Non-fatal - log and continue
-        containerLogger.warn({ error: bridgeError.message }, 'Could not disconnect from bridge network, continuing anyway');
-      }
-    } else {
-      containerLogger.debug('Container is not on bridge network, no disconnection needed');
+      containerLogger.warn({ networkName, actualNetworks: Object.keys(networks) }, 'Container is not on expected network - this may cause connectivity issues');
     }
     
     // Ensure UID 1000 user exists in container (codespace user)
@@ -554,15 +534,12 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     // Get updated container info after network changes and code-server installation
-    // This ensures we get the correct IP from the workspaces network
     containerInfo = await containerObj.inspect();
-    const containerIP = getContainerIP(containerInfo);
-    const containerPort = 8080;
     
-    buildLogger.info({ containerIP, containerPort, networkName }, 'Container ready');
+    buildLogger.info({ containerName: workspaceName, networkName }, 'Container ready');
     
     // Update nginx configuration
-    await updateNginxConfig(username, workspaceName, containerInfo.Id, containerIP, containerPort);
+    await updateNginxConfig(username, workspaceName, containerInfo.Id);
     
     buildLogger.info('Workspace build completed successfully');
     
@@ -608,49 +585,29 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
         
         if (container && container.State === 'running') {
           buildLogger.info({ containerId: container.Id }, 'Container is running despite network error, continuing');
-          const containerObj = docker.getContainer(container.Id);
-          const containerInfo = await containerObj.inspect();
           
-          // Try to get container IP
-          let containerIP = null;
-          try {
-            containerIP = getContainerIP(containerInfo);
-          } catch (ipError) {
-            buildLogger.warn({ error: ipError.message }, 'Could not determine container IP from our network, trying all networks');
-            // Try to get IP from any network
-            const networks = containerInfo.NetworkSettings.Networks;
-            const networkKeys = Object.keys(networks);
-            if (networkKeys.length > 0) {
-              containerIP = networks[networkKeys[0]].IPAddress;
-              buildLogger.info({ containerIP, network: networkKeys[0] }, 'Using IP from alternate network');
-            }
+          await updateNginxConfig(username, workspaceName, container.Id);
+          buildLogger.info({ containerName: workspaceName }, 'Container ready despite network issue');
+          
+          await writeToBuildLog(buildLogFile, `\n=== BUILD COMPLETED WITH WARNINGS ===\nContainer is running and accessible.\n`);
+          
+          // Determine devcontainer build status
+          let devcontainerBuildStatus;
+          if (!hasDevcontainer) {
+            devcontainerBuildStatus = 'no_devcontainer';
+          } else if (retryWithDefault) {
+            devcontainerBuildStatus = 'failed';
+          } else {
+            devcontainerBuildStatus = 'success';
           }
           
-          if (containerIP) {
-            const containerPort = 8080;
-            await updateNginxConfig(username, workspaceName, container.Id, containerIP, containerPort);
-            buildLogger.info({ containerIP, containerPort }, 'Container ready despite network issue');
-            
-            await writeToBuildLog(buildLogFile, `\n=== BUILD COMPLETED WITH WARNINGS ===\nContainer is running and accessible.\n`);
-            
-            // Determine devcontainer build status
-            let devcontainerBuildStatus;
-            if (!hasDevcontainer) {
-              devcontainerBuildStatus = 'no_devcontainer';
-            } else if (retryWithDefault) {
-              devcontainerBuildStatus = 'failed';
-            } else {
-              devcontainerBuildStatus = 'success';
-            }
-            
-            return {
-              containerId: container.Id,
-              name: workspaceName,
-              url: `/${username}/workspaces/${workspaceName}`,
-              status: 'running',
-              devcontainerBuildStatus
-            };
-          }
+          return {
+            containerId: container.Id,
+            name: workspaceName,
+            url: `/${username}/workspaces/${workspaceName}`,
+            status: 'running',
+            devcontainerBuildStatus
+          };
         }
       } catch (verifyError) {
         buildLogger.error({ error: verifyError.message }, 'Failed to verify container status');
@@ -744,48 +701,31 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
   }
 }
 
-function getCodeServerPort(containerInfo) {
-  const ports = containerInfo.NetworkSettings.Ports;
-  if (ports['8080/tcp'] && ports['8080/tcp'].length > 0) {
-    return ports['8080/tcp'][0].HostPort;
-  }
-  throw new Error('Could not determine code-server port');
-}
 
-function getContainerIP(containerInfo) {
-  const networks = containerInfo.NetworkSettings.Networks;
-  const networkName = 'workspaces_internal';
-  
-  // First priority: our custom network
-  if (networks[networkName] && networks[networkName].IPAddress) {
-    logger.debug({ ip: networks[networkName].IPAddress, network: networkName }, 'Using IP from workspaces network');
-    return networks[networkName].IPAddress;
-  }
-  
-  // Second priority: any non-bridge network
-  for (const [netName, netInfo] of Object.entries(networks)) {
-    if (netName !== 'bridge' && netInfo.IPAddress) {
-      logger.warn({ ip: netInfo.IPAddress, network: netName }, 'Using IP from non-bridge network (not workspaces)');
-      return netInfo.IPAddress;
-    }
-  }
-  
-  // Last resort: bridge network (should not happen if disconnection worked)
-  if (networks['bridge'] && networks['bridge'].IPAddress) {
-    logger.error({ ip: networks['bridge'].IPAddress }, 'WARNING: Using IP from bridge network - this indicates disconnection failed');
-    return networks['bridge'].IPAddress;
-  }
-  
-  throw new Error('Could not determine container IP address from any network');
-}
 
-async function updateNginxConfig(username, workspaceName, containerId, containerIP, port) {
-  const configFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.conf`);
+async function updateNginxConfig(username, workspaceName, containerId) {
+  // Use workspace name as container name
+  const containerName = workspaceName;
+  const upstreamName = `workspace_${workspaceName.replace(/-/g, '_')}`;
   
-  const config = `
+  // Create upstream configuration file (outside server block)
+  const upstreamFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.upstream.conf`);
+  const upstreamConfig = `
+# Workspace: ${username}/${workspaceName}
+upstream ${upstreamName} {
+    zone upstream_dynamic 64k;
+    server ${containerName}:8080 resolve;
+}
+`;
+  
+  await fs.writeFile(upstreamFile, upstreamConfig);
+  
+  // Create location configuration file (inside server block)
+  const locationFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.location.conf`);
+  const locationConfig = `
 # Workspace: ${username}/${workspaceName}
 location /${username}/workspaces/${workspaceName}/ {
-    proxy_pass http://${containerIP}:8080/;
+    proxy_pass http://${upstreamName}/;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
@@ -797,7 +737,7 @@ location /${username}/workspaces/${workspaceName}/ {
 }
 `;
   
-  await fs.writeFile(configFile, config);
+  await fs.writeFile(locationFile, locationConfig);
   
   // Reload nginx (non-fatal if it fails due to SSL cert issues)
   try {
@@ -904,9 +844,11 @@ async function deleteWorkspace(containerId) {
     
     // Remove nginx config (only if we have username and workspaceName)
     if (username && workspaceName) {
-      const configFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.conf`);
-      containerLogger.debug({ configFile }, 'Removing nginx config');
-      await fs.unlink(configFile).catch(() => {});
+      const upstreamFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.upstream.conf`);
+      const locationFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.location.conf`);
+      containerLogger.debug({ upstreamFile, locationFile }, 'Removing nginx config files');
+      await fs.unlink(upstreamFile).catch(() => {});
+      await fs.unlink(locationFile).catch(() => {});
       
       // Reload nginx
       await execAsync('docker exec nginx nginx -s reload');
@@ -944,11 +886,26 @@ async function startWorkspace(containerId) {
   // Wait for container to be fully started
   await new Promise(resolve => setTimeout(resolve, 2000));
   
-  // Start code-server
-  startLogger.info('Starting code-server in workspace');
+  // Get UID 1000 user name
+  const containerInfo = await container.inspect();
+  const username = containerInfo.Config.Labels['workspaces.username'];
+  const workspaceName = containerInfo.Config.Labels['workspaces.workspace'];
+  const uid1000Logger = createContainerLogger(username, workspaceName, containerId, 'ensure-uid1000');
+  
+  let uid1000User;
+  try {
+    uid1000User = await ensureUID1000User(container, uid1000Logger);
+    startLogger.info({ user: uid1000User }, 'UID 1000 user identified');
+  } catch (error) {
+    startLogger.error({ error: error.message }, 'Failed to ensure UID 1000 user, using root');
+    uid1000User = 'root';
+  }
+  
+  // Start code-server as UID 1000 user
+  startLogger.info({ user: uid1000User }, 'Starting code-server as UID 1000 user');
   const startScript = `
     set -e
-    echo "Starting code-server on port 8080..."
+    echo "Starting code-server on port 8080 as user ${uid1000User}..."
     nohup code-server --bind-addr 0.0.0.0:8080 --auth none /workspaces > /tmp/code-server.log 2>&1 &
     CODE_SERVER_PID=$!
     echo "code-server started with PID: $CODE_SERVER_PID"
@@ -973,7 +930,8 @@ async function startWorkspace(containerId) {
   const execStart = await container.exec({
     Cmd: ['/bin/sh', '-c', startScript],
     AttachStdout: true,
-    AttachStderr: true
+    AttachStderr: true,
+    User: uid1000User
   });
   
   const stream = await execStart.start({});
@@ -1000,6 +958,19 @@ async function stopWorkspace(containerId) {
   stopLogger.info('Stopping workspace');
   
   const container = docker.getContainer(containerId);
+  
+  // Check container state first
+  try {
+    stopLogger.debug('Inspecting container state');
+    const containerInfo = await container.inspect();
+    if (!containerInfo.State.Running) {
+      stopLogger.warn({ status: containerInfo.State.Status }, 'Container is already stopped');
+      return;
+    }
+  } catch (error) {
+    stopLogger.error({ error: error.message }, 'Failed to inspect container');
+    throw error;
+  }
   
   // Gracefully stop code-server before stopping container
   try {
@@ -1065,10 +1036,12 @@ async function cleanupWorkspaceFiles(username, workspaceName) {
   try {
     cleanupLogger.info('Starting workspace files cleanup');
     
-    // Remove nginx config
-    const configFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.conf`);
-    cleanupLogger.debug({ configFile }, 'Removing nginx config');
-    await fs.unlink(configFile).catch(() => {});
+    // Remove nginx config files
+    const upstreamFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.upstream.conf`);
+    const locationFile = path.join(NGINX_CONFIG_DIR, `workspace-${username}-${workspaceName}.location.conf`);
+    cleanupLogger.debug({ upstreamFile, locationFile }, 'Removing nginx config files');
+    await fs.unlink(upstreamFile).catch(() => {});
+    await fs.unlink(locationFile).catch(() => {});
     
     // Reload nginx
     try {
