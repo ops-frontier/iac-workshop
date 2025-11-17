@@ -50,7 +50,12 @@ variable "disk_size" {
 
 # Domain configuration
 variable "domain" {
-  description = "Domain name for the service (FQDN)"
+  description = "DNS zone subdomain (e.g., example.com)"
+  type        = string
+}
+
+variable "dns_service_id" {
+  description = "Sakura Cloud DNS Service ID"
   type        = string
 }
 

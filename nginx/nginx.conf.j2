@@ -65,8 +65,8 @@ http {
         http2 on;
         server_name _;
 
-        ssl_certificate /etc/nginx/ssl/fullchain.pem;
-        ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+        ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
 
         return 400 "Bad Request: Invalid Host Header\n";
     }
@@ -98,8 +98,8 @@ http {
         http2 on;
         server_name {{ domain }};
 
-        ssl_certificate /etc/nginx/ssl/fullchain.pem;
-        ssl_certificate_key /etc/nginx/ssl/privkey.pem;
+        ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
 
         # Security headers
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;

@@ -14,8 +14,13 @@ output "ssh_command" {
 }
 
 output "service_url" {
-  description = "Service URL (after DNS is configured)"
-  value       = "https://${var.domain}"
+  description = "Service URL"
+  value       = "https://ws.${var.domain}"
+}
+
+output "hostname" {
+  description = "Service hostname"
+  value       = "ws.${var.domain}"
 }
 
 output "ansible_inventory" {

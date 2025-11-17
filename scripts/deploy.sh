@@ -32,6 +32,11 @@ check_env_vars() {
         missing=1
     fi
     
+    if [ -z "$TF_VAR_dns_service_id" ]; then
+        echo "❌ TF_VAR_dns_service_id が設定されていません"
+        missing=1
+    fi
+    
     if [ -z "$TF_VAR_github_client_id" ]; then
         echo "❌ TF_VAR_github_client_id が設定されていません"
         missing=1
@@ -142,11 +147,63 @@ deploy_terraform() {
         echo ""
         echo "✅ サーバーの接続確認が完了しました"
         
+        # DNSレコードの登録確認
+        echo ""
+        echo "📡 DNSレコードの登録を確認中..."
+        HOSTNAME=$(terraform output -raw hostname)
+        echo "ホスト名: $HOSTNAME"
+        
+        MAX_DNS_ATTEMPTS=30  # 5分間（10秒間隔で30回）
+        DNS_ATTEMPT=0
+        DNS_RESOLVED=false
+        
+        while [ $DNS_ATTEMPT -lt $MAX_DNS_ATTEMPTS ]; do
+            DNS_ATTEMPT=$((DNS_ATTEMPT + 1))
+            ELAPSED=$((DNS_ATTEMPT * 10))
+            
+            printf "\r   経過時間: %d秒 / 300秒 - DNS確認 %d/%d..." $ELAPSED $DNS_ATTEMPT $MAX_DNS_ATTEMPTS
+            
+            # digコマンドでAレコードを確認
+            DNS_IP=$(dig +short "$HOSTNAME" A | head -n 1)
+            
+            if [ -n "$DNS_IP" ] && [ "$DNS_IP" = "$SERVER_IP" ]; then
+                echo ""
+                echo "✅ DNSレコードが正しく登録されています！（${ELAPSED}秒後）"
+                echo "   $HOSTNAME -> $DNS_IP"
+                DNS_RESOLVED=true
+                break
+            elif [ -n "$DNS_IP" ]; then
+                echo ""
+                echo "⚠️  DNS応答がありますが、IPアドレスが一致しません"
+                echo "   期待: $SERVER_IP"
+                echo "   実際: $DNS_IP"
+            fi
+            
+            sleep 10
+        done
+        
+        echo ""
+        
+        if [ "$DNS_RESOLVED" = false ]; then
+            echo "⚠️  警告: 5分経ってもDNSレコードが確認できません"
+            echo ""
+            echo "DNSの伝播には時間がかかる場合があります。"
+            echo "さくらのクラウドのコントロールパネルでDNSレコードを確認してください。"
+            echo ""
+            echo "Ansibleデプロイは続行できますが、SSL証明書の取得に失敗する可能性があります。"
+            echo ""
+            read -p "Ansibleデプロイを続行しますか? (y/N): " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                echo "デプロイを中断しました"
+                echo "後で続行する場合: ./scripts/deploy.sh ansible"
+                exit 0
+            fi
+        fi
+        
         echo ""
         echo "次のステップ:"
-        echo "1. 上記のIPアドレスをドメインのAレコードに設定してください"
-        echo "2. DNSの伝播を待ってください（数分〜数時間）"
-        echo "3. Ansibleを実行してください: ./scripts/deploy.sh ansible"
+        echo "1. Ansibleを実行してください: ./scripts/deploy.sh ansible"
         echo "   (inventory.ini は自動生成されます）"
     else
         echo "デプロイをキャンセルしました"
@@ -198,7 +255,7 @@ EOF
     echo "✅ Ansibleデプロイ完了"
     echo ""
     echo "サービスが起動しました！"
-    echo "https://$TF_VAR_domain にアクセスしてください"
+    echo "https://ws.$TF_VAR_domain にアクセスしてください"
     
     cd ..
 }
@@ -216,12 +273,7 @@ main() {
             ;;
         all)
             deploy_terraform
-            echo ""
-            read -p "Ansibleデプロイを続行しますか? DNSの伝播を待ってください。(y/N): " -n 1 -r
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                deploy_ansible
-            fi
+            deploy_ansible
             ;;
         *)
             echo "使用方法: $0 [terraform|ansible|all]"

@@ -7,13 +7,14 @@
   vars:
     app_dir: /opt/workspaces
     # Terraform環境変数から取得（TF_VAR_*）
-    domain: "{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
+    dns_zone: "{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
+    domain: "ws.{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
     github_client_id: "{{ lookup('ansible.builtin.env', 'TF_VAR_github_client_id') }}"
     github_client_secret: "{{ lookup('ansible.builtin.env', 'TF_VAR_github_client_secret') }}"
     target_organization: "{{ lookup('ansible.builtin.env', 'TARGET_ORGANIZATION') }}"
     # email は優先的に環境変数 DEPLOYER_EMAIL から取得
     # 未設定の場合は admin@<domain> をフォールバックとして使用
-    email: "{{ lookup('ansible.builtin.env', 'DEPLOYER_EMAIL') | default('admin@' ~ domain) }}"
+    email: "{{ lookup('ansible.builtin.env', 'DEPLOYER_EMAIL') | default('admin@' ~ dns_zone) }}"
 
   pre_tasks:
     - name: Wait for SSH connection to be available
@@ -109,12 +110,12 @@
         iptables -P INPUT ACCEPT
         iptables -P FORWARD DROP
         iptables -P OUTPUT ACCEPT
-        
+
         # Flush only user chains, preserve Docker chains
         iptables -F INPUT
         iptables -F OUTPUT
         # Do NOT flush FORWARD or delete chains (Docker needs them)
-        
+
         # Basic INPUT rules
         iptables -A INPUT -i lo -j ACCEPT
         iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -123,7 +124,7 @@
         iptables -A INPUT -p tcp --dport 80 -j ACCEPT
         iptables -A INPUT -p tcp --dport 443 -j ACCEPT
         iptables -A INPUT -j DROP
-        
+
         # Save rules
         netfilter-persistent save
       changed_when: true
@@ -164,7 +165,6 @@
         - "{{ app_dir }}/app"
         - "{{ app_dir }}/nginx"
         - "{{ app_dir }}/nginx/conf.d"
-        - "{{ app_dir }}/ssl"
         - "{{ app_dir }}/workspaces"
 
     - name: Create workspace and build log directories for codespace user
@@ -189,9 +189,9 @@
         - {src: '../app/', dest: '{{ app_dir }}/app/'}
         - {src: '../docker/', dest: '{{ app_dir }}/'}
 
-    - name: Deploy nginx configuration from template
-      ansible.builtin.template:
-        src: ../nginx/nginx.conf
+    - name: Deploy initial nginx configuration (without SSL)
+      ansible.builtin.copy:
+        src: ../nginx/nginx.conf.initial
         dest: "{{ app_dir }}/nginx/nginx.conf"
         owner: ubuntu
         group: ubuntu
@@ -205,54 +205,13 @@
         group: ubuntu
         mode: '0600'
 
-    - name: Check if SSL certificate already exists
-      ansible.builtin.stat:
-        path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
-      register: ssl_cert
-
-    - name: Stop any existing nginx containers for SSL certificate generation
-      community.docker.docker_compose_v2:
-        project_src: "{{ app_dir }}"
-        state: stopped
-      register: docker_stop
-      failed_when: false
-      when: not ssl_cert.stat.exists
-
-    - name: Obtain SSL certificate with certbot
-      ansible.builtin.command:
-        cmd: >
-          certbot certonly --standalone --non-interactive --agree-tos
-          --email {{ email }} -d {{ domain }} --staging
-      when: not ssl_cert.stat.exists
-      changed_when: true
-
-    - name: Copy SSL certificates to app directory
-      ansible.builtin.copy:
-        src: "/etc/letsencrypt/live/{{ domain }}/{{ item }}"
-        dest: "{{ app_dir }}/ssl/{{ item }}"
+    - name: Create certbot webroot directory
+      ansible.builtin.file:
+        path: /var/www/certbot
+        state: directory
         owner: ubuntu
         group: ubuntu
-        mode: '0644'
-        remote_src: true
-      loop:
-        - fullchain.pem
-        - privkey.pem
-
-    - name: Copy certificate renewal script
-      ansible.builtin.copy:
-        src: files/renew-cert.sh
-        dest: /usr/local/bin/renew-cert.sh
-        owner: root
-        group: root
         mode: '0755'
-
-    - name: Set up certbot renewal cron job (daily at 3 AM)
-      ansible.builtin.cron:
-        name: "Renew Let's Encrypt certificates and reload nginx"
-        minute: "0"
-        hour: "3"
-        job: "/usr/local/bin/renew-cert.sh {{ domain }} >> /var/log/certbot-renewal.log 2>&1"
-        user: root
 
     - name: Reset SSH connection to apply docker group membership
       ansible.builtin.meta: reset_connection
@@ -274,7 +233,7 @@
           Description=Workspaces Docker Compose Application
           Requires=docker.service
           After=docker.service
-          
+
           [Service]
           Type=oneshot
           RemainAfterExit=yes
@@ -284,7 +243,7 @@
           TimeoutStopSec=300
           User=ubuntu
           Group=ubuntu
-          
+
           [Install]
           WantedBy=multi-user.target
         mode: '0644'
@@ -308,6 +267,56 @@
         name: workspaces
         enabled: true
         state: started
+
+    - name: Wait for nginx to be ready
+      ansible.builtin.wait_for:
+        port: 80
+        delay: 5
+        timeout: 60
+
+    - name: Check if SSL certificate already exists
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+      register: ssl_cert
+
+    - name: Obtain SSL certificate with certbot (webroot mode)
+      when: not ssl_cert.stat.exists
+      block:
+        - name: Obtain SSL certificate with certbot (webroot mode)
+          ansible.builtin.command:
+            cmd: >
+              certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos
+              --email {{ email }} -d {{ domain }} --staging
+          changed_when: true
+
+        - name: Deploy production nginx configuration with SSL
+          ansible.builtin.template:
+            src: ../nginx/nginx.conf.j2
+            dest: "{{ app_dir }}/nginx/nginx.conf"
+            owner: ubuntu
+            group: ubuntu
+            mode: '0644'
+
+        - name: Restart nginx container to use new configuration and certificates
+          ansible.builtin.command:
+            cmd: docker restart workspaces-nginx
+          changed_when: true
+
+    - name: Copy certificate renewal script
+      ansible.builtin.copy:
+        src: files/renew-cert.sh
+        dest: /usr/local/bin/renew-cert.sh
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Set up certbot renewal cron job (daily at 3 AM)
+      ansible.builtin.cron:
+        name: "Renew Let's Encrypt certificates and reload nginx"
+        minute: "0"
+        hour: "3"
+        job: "/usr/local/bin/renew-cert.sh {{ domain }} >> /var/log/certbot-renewal.log 2>&1"
+        user: root
 
     - name: Wait for application to be ready
       ansible.builtin.wait_for:

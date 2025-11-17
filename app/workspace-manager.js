@@ -714,7 +714,7 @@ async function updateNginxConfig(username, workspaceName, containerId) {
 # Workspace: ${username}/${workspaceName}
 upstream ${upstreamName} {
     zone upstream_dynamic 64k;
-    server ${containerName}:8080 resolve;
+    server ${containerName}:8080 resolve max_fails=0;
 }
 `;
   
@@ -734,6 +734,10 @@ location /${username}/workspaces/${workspaceName}/ {
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
     proxy_read_timeout 86400;
+    proxy_connect_timeout 300s;
+    proxy_next_upstream error timeout http_502 http_503 http_504;
+    proxy_next_upstream_tries 10;
+    proxy_next_upstream_timeout 300s;
 }
 `;
   
@@ -741,7 +745,7 @@ location /${username}/workspaces/${workspaceName}/ {
   
   // Reload nginx (non-fatal if it fails due to SSL cert issues)
   try {
-    await execAsync('docker exec nginx nginx -s reload');
+    await execAsync('docker exec workspaces-nginx nginx -s reload');
   } catch (error) {
     // Log the error but don't throw - SSL cert issues shouldn't block workspace creation
     logger.warn({ error: error.message }, 'Nginx reload failed (likely SSL certificate issue), but config was written');
@@ -851,7 +855,7 @@ async function deleteWorkspace(containerId) {
       await fs.unlink(locationFile).catch(() => {});
       
       // Reload nginx
-      await execAsync('docker exec nginx nginx -s reload');
+      await execAsync('docker exec workspaces-nginx nginx -s reload');
       containerLogger.debug('Nginx reloaded');
       
       // Wait a bit more to ensure mount is released
@@ -1045,7 +1049,7 @@ async function cleanupWorkspaceFiles(username, workspaceName) {
     
     // Reload nginx
     try {
-      await execAsync('docker exec nginx nginx -s reload');
+      await execAsync('docker exec workspaces-nginx nginx -s reload');
       cleanupLogger.debug('Nginx reloaded');
     } catch (error) {
       cleanupLogger.warn({ error: error.message }, 'Failed to reload nginx');

@@ -49,7 +49,8 @@
 
 - さくらのクラウドアカウント
 - APIキー（トークン + シークレット）
-- ドメイン（事前にDNS設定が可能なもの）
+- さくらのクラウドDNSサービス（ゾーン登録済み）
+- DNSサービスID（コントロールパネルから確認）
 
 ### GitHub OAuth App
 
@@ -58,9 +59,21 @@ GitHubで新しいOAuth Appを作成してください：
 1. GitHub Settings → Developer settings → OAuth Apps → New OAuth App
 2. 以下の情報を設定：
    - Application name: `Workspaces`
-   - Homepage URL: `https://your-domain.com`
-   - Authorization callback URL: `https://your-domain.com/auth/github/callback`
+   - Homepage URL: `https://ws.your-domain.com`
+   - Authorization callback URL: `https://ws.your-domain.com/auth/github/callback`
 3. Client IDとClient Secretを控えておく
+
+### アクセス制御（TARGET_ORGANIZATION）
+
+`TARGET_ORGANIZATION`環境変数で指定したGitHub組織により、アクセスが制限されます：
+
+- **ログイン**: 指定した組織のメンバーのみがログイン可能
+- **ワークスペース作成**: 指定した組織のリポジトリのみがワークスペースの対象
+
+例: `TARGET_ORGANIZATION=your-company` と設定すると：
+- `your-company`組織のメンバーのみがサービスにアクセス可能
+- `https://github.com/your-company/your-repo` のようなリポジトリのみワークスペース作成可能
+- 組織外のリポジトリや個人リポジトリはアクセス拒否
 
 ## セットアップ手順
 
@@ -87,9 +100,11 @@ cd pseudo-code-spaces-sakura
 TF_VAR_SAKURA_TOKEN=<さくらのクラウドのトークン>
 TF_VAR_SAKURA_SECRET=<さくらのクラウドのシークレット>
 TF_VAR_SSH_PUBLIC_KEY=<~/.ssh/id_rsa.pubの内容>
-TF_VAR_DOMAIN=<あなたのドメイン>
+TF_VAR_DOMAIN=<DNSゾーンのサブドメイン名（例: example.com）>
+TF_VAR_DNS_SERVICE_ID=<さくらのクラウドDNSサービスID>
 TF_VAR_GITHUB_CLIENT_ID=<GitHub OAuth AppのClient ID>
 TF_VAR_GITHUB_CLIENT_SECRET=<GitHub OAuth AppのClient Secret>
+TARGET_ORGANIZATION=<アクセスを許可するGitHub組織名>
 DEPLOYER_EMAIL=<SSL証明書の期限切れ警告メールを受け取るメールアドレス>
 ```
 
@@ -107,12 +122,18 @@ export TF_VAR_sakura_secret="your-sakura-secret"
 # SSH公開鍵（~/.ssh/id_rsa.pubの内容）
 export TF_VAR_ssh_public_key="ssh-rsa AAAA..."
 
-# ドメイン
+# ドメイン（DNSゾーンのサブドメイン名）
 export TF_VAR_domain="your-domain.com"
+
+# さくらのクラウドDNSサービスID
+export TF_VAR_dns_service_id="123456789012"
 
 # GitHub OAuth
 export TF_VAR_github_client_id="your-github-client-id"
 export TF_VAR_github_client_secret="your-github-client-secret"
+
+# アクセスを許可するGitHub組織名
+export TARGET_ORGANIZATION="your-github-org"
 
 # SSL証明書の期限切れ警告メールアドレス（オプション）
 # 未設定の場合は admin@your-domain.com が使用されます
@@ -136,15 +157,11 @@ terraform apply
 
 デプロイが完了すると、サーバーのIPアドレスが表示されます。
 
-### 5. DNSレコードの設定
+### 5. DNSレコードの自動登録
 
-取得したIPアドレスをドメインのAレコードに設定してください。
+TerraformがさくらのクラウドDNSサービスに自動的にAレコード（`ws.your-domain.com`）を登録します。
 
-```
-A   your-domain.com   →   IPアドレス
-```
-
-DNSの伝播を待ちます（通常数分〜数時間）。
+デプロイスクリプトが自動的にDNS登録を確認します（最大5分待機）。
 
 ### 6. Ansibleでサーバーを構築
 
@@ -172,13 +189,15 @@ Ansibleが以下を自動的に実行します：
 
 ### 7. サービスへアクセス
 
-ブラウザで `https://your-domain.com` にアクセスしてください。
+ブラウザで `https://ws.your-domain.com` にアクセスしてください。
+
+**注意**: サービスは `ws.your-domain.com` でホストされます（`your-domain.com` は DNS ゾーン名です）。
 
 ## 使用方法
 
 ### ログイン
 
-1. `https://your-domain.com` にアクセス
+1. `https://ws.your-domain.com` にアクセス
 2. 「GitHubでログイン」ボタンをクリック
 3. GitHubで認証・認可
 
@@ -252,6 +271,8 @@ Ansibleが以下を自動的に実行します：
 ## セキュリティ機能
 
 - **GitHub OAuth認証**: PKCE & stateパラメータによるCSRF対策
+- **組織ベースのアクセス制御**: 指定したGitHub組織のメンバーのみがアクセス可能
+- **リポジトリアクセス制限**: 指定した組織のリポジトリのみワークスペース作成可能
 - **SSL/TLS**: Let's Encryptによる自動証明書取得
 - **セキュアなセッション**: httpOnly, secure cookieの使用
 - **Rate Limiting**: API呼び出しの制限
