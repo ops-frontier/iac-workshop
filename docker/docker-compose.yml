@@ -1,7 +1,7 @@
 services:
   nginx:
     image: nginx:latest
-    container_name: workspaces-nginx
+    container_name: nginx
     ports:
       - "80:80"
       - "443:443"
@@ -10,9 +10,11 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:rw
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/www/certbot:/var/www/certbot:ro
+      - /var/docs:/var/docs:ro
       - nginx-cache:/var/cache/nginx
     depends_on:
       - app
+      - docs-renew
     restart: unless-stopped
     networks:
       - internal
@@ -21,7 +23,9 @@ services:
     build:
       context: ./app
       dockerfile: Dockerfile
-    container_name: workspaces-app
+    container_name: workspaces-server
+    env_file:
+      - ./app/.env
     volumes:
       - ./app/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
@@ -29,6 +33,21 @@ services:
       - ./nginx/conf.d:/opt/nginx-config:rw
     restart: unless-stopped
     stop_grace_period: 20s
+    networks:
+      - internal
+
+  docs-renew:
+    build:
+      context: .
+      dockerfile: ./docs-renew/Dockerfile
+    container_name: docs-renew
+    environment:
+      - PORT=3001
+    env_file:
+      - ./app/.env
+    volumes:
+      - /var/docs:/var/docs:rw
+    restart: unless-stopped
     networks:
       - internal
 

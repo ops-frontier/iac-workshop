@@ -7,8 +7,6 @@ set -e
 # Set environment variables
 cat >> /etc/environment << 'EOF'
 DOMAIN="${domain}"
-GITHUB_CLIENT_ID="${github_client_id}"
-GITHUB_CLIENT_SECRET="${github_client_secret}"
 EOF
 
 # Change ubuntu user UID/GID to 1001

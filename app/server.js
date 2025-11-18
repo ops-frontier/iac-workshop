@@ -1,4 +1,8 @@
-require('dotenv').config();
+// Load .env file only in development (not needed in Docker with env_file)
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
+
 const express = require('express');
 const session = require('express-session');
 const passport = require('passport');
@@ -19,8 +23,19 @@ const docker = new Docker();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DOMAIN = process.env.DOMAIN;
+const WS_DOMAIN = process.env.WS_DOMAIN;
 const TARGET_ORGANIZATION = process.env.TARGET_ORGANIZATION;
-const CALLBACK_URL = `https://${DOMAIN}/auth/github/callback`;
+const CALLBACK_URL = `https://${WS_DOMAIN}/auth/github/callback`;
+
+// Debug: Log environment variables at startup
+logger.info({
+  NODE_ENV: process.env.NODE_ENV,
+  WS_GITHUB_CLIENT_ID: process.env.WS_GITHUB_CLIENT_ID ? 'SET' : 'NOT SET',
+  WS_GITHUB_CLIENT_SECRET: process.env.WS_GITHUB_CLIENT_SECRET ? 'SET' : 'NOT SET',
+  DOMAIN,
+  WS_DOMAIN,
+  TARGET_ORGANIZATION
+}, 'Environment variables at startup');
 
 // Trust proxy (Nginx reverse proxy)
 app.set('trust proxy', 1);
@@ -31,26 +46,26 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: `https://${DOMAIN}`,
+  origin: `https://${WS_DOMAIN}`,
   credentials: true
 }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  skip: (req) => {
-    // Skip rate limiting for SSE endpoint
-    return req.path === '/workspaces/events' || req.url === '/workspaces/events';
-  }
-});
-app.use('/api/', limiter);
 
 // Body parser
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session configuration
+// Rate limiting (applied selectively after auth verify endpoint)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  skip: (req) => {
+    // Skip rate limiting for SSE endpoint
+    return req.path === '/workspaces/events' || 
+           req.url === '/workspaces/events';
+  }
+});
+
+// Session configuration (domain-specific, not shared)
 app.use(session({
   secret: process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex'),
   resave: false,
@@ -59,72 +74,29 @@ app.use(session({
     secure: true,
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: 'lax' // Important for OAuth callback
+    sameSite: 'lax', // Important for OAuth callback
+    path: '/' // Ensure cookie is available for all paths
+    // No domain specified - cookie is specific to this subdomain only
   },
-  proxy: true // Trust proxy (Nginx)
+  proxy: true, // Trust proxy (Nginx)
+  name: 'workspaces.sid' // Custom session cookie name for clarity
 }));
 
-// Passport configuration
-passport.use(new GitHubStrategy({
-  clientID: process.env.GITHUB_CLIENT_ID,
-  clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: CALLBACK_URL
-},
-async function(accessToken, refreshToken, profile, done) {
-  const userLogger = createUserLogger(profile.username);
-  userLogger.info({ profileId: profile.id }, 'GitHub OAuth callback');
-  
-  try {
-    // Check organization membership
-    if (TARGET_ORGANIZATION) {
-      userLogger.debug({ organization: TARGET_ORGANIZATION }, 'Checking organization membership');
-      
-      const https = require('https');
-      const checkMembership = () => {
-        return new Promise((resolve, reject) => {
-          const options = {
-            hostname: 'api.github.com',
-            path: `/user/orgs`,
-            method: 'GET',
-            headers: {
-              'Authorization': `token ${accessToken}`,
-              'User-Agent': 'Workspaces-App',
-              'Accept': 'application/vnd.github.v3+json'
-            }
-          };
-          
-          const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-              if (res.statusCode === 200) {
-                resolve(JSON.parse(data));
-              } else {
-                reject(new Error(`GitHub API returned ${res.statusCode}: ${data}`));
-              }
-            });
-          });
-          
-          req.on('error', reject);
-          req.end();
-        });
-      };
-      
-      const userOrgs = await checkMembership();
-      const isMember = userOrgs.some(org => org.login === TARGET_ORGANIZATION);
-      
-      if (!isMember) {
-        userLogger.warn({ username: profile.username, organization: TARGET_ORGANIZATION }, 'User is not a member of the required organization');
-        return done(null, false, { 
-          message: `ユーザー ${profile.username} は組織 ${TARGET_ORGANIZATION} に所属していません` 
-        });
-      }
-      
-      userLogger.info({ username: profile.username, organization: TARGET_ORGANIZATION }, 'Organization membership verified');
-    }
-    
+// Import shared OAuth configuration
+const { configureGitHubAuth, createOAuthRoutes } = require('./auth-common');
+
+// Configure GitHub OAuth strategy with organization checking
+configureGitHubAuth({
+  passport,
+  clientID: process.env.WS_GITHUB_CLIENT_ID,
+  clientSecret: process.env.WS_GITHUB_CLIENT_SECRET,
+  callbackURL: CALLBACK_URL,
+  targetOrganization: TARGET_ORGANIZATION,
+  logger,
+  onAuthSuccess: (accessToken, profile) => {
+    // Create user object from GitHub profile
     const user = {
-      id: String(profile.id), // Ensure ID is string
+      id: String(profile.id),
       username: profile.username,
       displayName: profile.displayName,
       email: profile.emails && profile.emails[0] ? profile.emails[0].value : null,
@@ -132,17 +104,13 @@ async function(accessToken, refreshToken, profile, done) {
       githubAccessToken: accessToken
     };
     
-    userLogger.debug({ user: { ...user, githubAccessToken: '[REDACTED]' } }, 'Storing user');
     // Store or update user in database
     db.upsertUser(user);
     
-    return done(null, user);
-  } catch (error) {
-    userLogger.error({ error: error.message }, 'Error during OAuth callback');
-    return done(error);
+    // Return user object for passport
+    return user;
   }
-}
-));
+});
 
 passport.serializeUser((user, done) => {
   logger.debug({ userId: user.id }, 'Serializing user');
@@ -220,66 +188,33 @@ app.get('/', (req, res) => {
   }
 });
 
-// Auth routes with PKCE support
-app.get('/auth/github', (req, res, next) => {
-  // Generate state parameter for CSRF protection
-  const state = crypto.randomBytes(32).toString('hex');
-  req.session.oauthState = state;
-  
-  logger.info({ sessionId: req.sessionID, state }, 'OAuth initiated');
-  
-  passport.authenticate('github', {
-    scope: ['user:email', 'read:org', 'repo'],
-    state: state
-  })(req, res, next);
+// Authentication verification endpoint for nginx auth_request (NO rate limiting)
+app.get('/api/auth/verify', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.status(200).send('OK');
+  } else {
+    res.status(401).send('Unauthorized');
+  }
 });
 
-app.get('/auth/github/callback',
-  (req, res, next) => {
-    const callbackLogger = logger.child({ 
-      sessionId: req.sessionID,
-      queryState: req.query.state,
-      sessionState: req.session.oauthState
-    });
-    
-    callbackLogger.debug('OAuth callback received');
-    
-    // Verify state parameter
-    if (req.query.state !== req.session.oauthState) {
-      callbackLogger.error('State mismatch in OAuth callback');
-      return res.status(403).send('Invalid state parameter. Please try logging in again.');
-    }
-    delete req.session.oauthState;
-    next();
-  },
-  (req, res, next) => {
-    passport.authenticate('github', (err, user, info) => {
-      const callbackLogger = logger.child({ sessionId: req.sessionID });
-      
-      if (err) {
-        callbackLogger.error({ error: err.message }, 'Authentication error');
-        return res.redirect('/?error=' + encodeURIComponent('認証中にエラーが発生しました'));
-      }
-      
-      if (!user) {
-        // Authentication failed (e.g., organization membership check failed)
-        const errorMessage = info && info.message ? info.message : '認証に失敗しました';
-        callbackLogger.warn({ info }, 'Authentication failed');
-        return res.redirect('/?error=' + encodeURIComponent(errorMessage));
-      }
-      
-      // Authentication successful
-      req.logIn(user, (err) => {
-        if (err) {
-          callbackLogger.error({ error: err.message }, 'Login error');
-          return res.redirect('/?error=' + encodeURIComponent('ログイン処理に失敗しました'));
-        }
-        callbackLogger.info({ username: user.username }, 'User logged in successfully');
-        return res.redirect('/dashboard');
-      });
-    })(req, res, next);
+// Apply rate limiting to other API endpoints (after auth verify)
+app.use('/api/', limiter);
+
+// Create OAuth routes using shared module
+const { initiateAuth, handleCallback } = createOAuthRoutes({
+  passport,
+  logger,
+  defaultReturnTo: '/dashboard',
+  errorMessages: {
+    authError: '認証中にエラーが発生しました',
+    authFailed: '認証に失敗しました',
+    loginError: 'ログイン処理に失敗しました'
   }
-);
+});
+
+// Auth routes
+app.get('/auth/github', initiateAuth);
+app.get('/auth/github/callback', handleCallback);
 
 app.get('/logout', (req, res) => {
   req.logout((err) => {

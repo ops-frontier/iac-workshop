@@ -122,12 +122,12 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
   const buildLogger = createActionLogger(username, workspaceName, 'build-devcontainer');
   
   if (retryWithDefault) {
-    buildLogger.info('Retrying build with default devcontainer image after previous failure');
+    buildLogger.info('Retrying build with default devcontainer image (original build failed)');
   } else {
-    buildLogger.info('Building and starting devcontainer using @devcontainers/cli');
+    buildLogger.info('Building workspace with devcontainer CLI');
   }
   
-  const containerName = `workspace-${username}-${workspaceName}`;
+  const containerName = `code-server-${workspaceName}`;
   const networkName = 'workspaces_internal';
   
   // Prepare build log
@@ -191,13 +191,13 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       // Add our --name and --network options
       devcontainerConfig.runArgs = [
         ...filteredRunArgs,
-        '--name', workspaceName,
+        '--name', containerName,
         '--network', networkName
       ];
       
       await fs.writeFile(devcontainerPath, JSON.stringify(devcontainerConfig, null, 2));
-      buildLogger.info({ containerName: workspaceName, networkName }, 'Added container name and network to devcontainer.json runArgs');
-      await writeToBuildLog(buildLogFile, `Added --name ${workspaceName} and --network ${networkName} to devcontainer.json runArgs\n`);
+      buildLogger.info({ containerName, networkName }, 'Added container name and network to devcontainer.json runArgs');
+      await writeToBuildLog(buildLogFile, `Added --name ${containerName} and --network ${networkName} to devcontainer.json runArgs\n`);
     } catch (error) {
       buildLogger.warn({ error: error.message }, 'Failed to modify devcontainer.json, continuing without container name/network');
     }
@@ -223,10 +223,10 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
     try {
       await fs.mkdir(devcontainerDir, { recursive: true });
       const devcontainerConfig = {
-        name: workspaceName,
+        name: containerName,
         image: defaultImage,
         runArgs: [
-          '--name', workspaceName,
+          '--name', containerName,
           '--network', networkName
         ],
         customizations: {
@@ -704,8 +704,8 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
 
 
 async function updateNginxConfig(username, workspaceName, containerId) {
-  // Use workspace name as container name
-  const containerName = workspaceName;
+  // Use code-server container name
+  const containerName = `code-server-${workspaceName}`;
   const upstreamName = `workspace_${workspaceName.replace(/-/g, '_')}`;
   
   // Create upstream configuration file (outside server block)
@@ -725,6 +725,10 @@ upstream ${upstreamName} {
   const locationConfig = `
 # Workspace: ${username}/${workspaceName}
 location /${username}/workspaces/${workspaceName}/ {
+    # Authentication check
+    auth_request /auth/verify;
+    error_page 401 = /auth/login.html;
+    
     proxy_pass http://${upstreamName}/;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
@@ -745,7 +749,7 @@ location /${username}/workspaces/${workspaceName}/ {
   
   // Reload nginx (non-fatal if it fails due to SSL cert issues)
   try {
-    await execAsync('docker exec workspaces-nginx nginx -s reload');
+    await execAsync('docker exec nginx nginx -s reload');
   } catch (error) {
     // Log the error but don't throw - SSL cert issues shouldn't block workspace creation
     logger.warn({ error: error.message }, 'Nginx reload failed (likely SSL certificate issue), but config was written');
@@ -854,8 +858,8 @@ async function deleteWorkspace(containerId) {
       await fs.unlink(upstreamFile).catch(() => {});
       await fs.unlink(locationFile).catch(() => {});
       
-      // Reload nginx
-      await execAsync('docker exec workspaces-nginx nginx -s reload');
+            // Reload nginx
+      await execAsync('docker exec nginx nginx -s reload');
       containerLogger.debug('Nginx reloaded');
       
       // Wait a bit more to ensure mount is released

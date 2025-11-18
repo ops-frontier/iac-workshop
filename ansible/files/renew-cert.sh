@@ -21,7 +21,7 @@ if certbot renew --quiet --deploy-hook "echo 'Certificate renewed successfully'"
     # 証明書が更新された場合、Nginxコンテナをリロード
     if [ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
         echo "$(date): Reloading nginx" | tee -a "$LOG_FILE"
-        docker exec workspaces-nginx nginx -s reload
+        docker exec nginx nginx -s reload
         
         echo "$(date): Certificate renewal completed successfully" | tee -a "$LOG_FILE"
     fi

@@ -59,19 +59,6 @@ variable "dns_service_id" {
   type        = string
 }
 
-# GitHub OAuth configuration
-variable "github_client_id" {
-  description = "GitHub OAuth App Client ID"
-  type        = string
-  sensitive   = true
-}
-
-variable "github_client_secret" {
-  description = "GitHub OAuth App Client Secret"
-  type        = string
-  sensitive   = true
-}
-
 # Network configuration
 variable "network_cidr" {
   description = "Private network CIDR"

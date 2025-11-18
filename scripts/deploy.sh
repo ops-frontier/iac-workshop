@@ -37,13 +37,28 @@ check_env_vars() {
         missing=1
     fi
     
-    if [ -z "$TF_VAR_github_client_id" ]; then
-        echo "❌ TF_VAR_github_client_id が設定されていません"
+    if [ -z "$WS_GITHUB_CLIENT_ID" ]; then
+        echo "❌ WS_GITHUB_CLIENT_ID が設定されていません"
         missing=1
     fi
     
-    if [ -z "$TF_VAR_github_client_secret" ]; then
-        echo "❌ TF_VAR_github_client_secret が設定されていません"
+    if [ -z "$WS_GITHUB_CLIENT_SECRET" ]; then
+        echo "❌ WS_GITHUB_CLIENT_SECRET が設定されていません"
+        missing=1
+    fi
+    
+    if [ -z "$DOCS_GITHUB_CLIENT_ID" ]; then
+        echo "❌ DOCS_GITHUB_CLIENT_ID が設定されていません"
+        missing=1
+    fi
+    
+    if [ -z "$DOCS_GITHUB_CLIENT_SECRET" ]; then
+        echo "❌ DOCS_GITHUB_CLIENT_SECRET が設定されていません"
+        missing=1
+    fi
+    
+    if [ -z "$TARGET_ORGANIZATION" ]; then
+        echo "❌ TARGET_ORGANIZATION が設定されていません"
         missing=1
     fi
     

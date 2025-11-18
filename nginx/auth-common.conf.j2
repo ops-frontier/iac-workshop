@@ -1,0 +1,88 @@
+# Common authentication configuration
+# This file is included by both ws and docs server blocks
+
+# Authentication verification endpoint
+location = /auth/verify {
+    internal;
+    proxy_pass http://workspace_workspaces_server/api/auth/verify;
+    proxy_pass_request_body off;
+    proxy_set_header Content-Length "";
+    proxy_set_header X-Original-URI $request_uri;
+    proxy_set_header Cookie $http_cookie;
+}
+
+# 401 error page with GitHub OAuth redirect
+location = /auth/login.html {
+    internal;
+    default_type text/html;
+    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+    return 200 '<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>認証が必要です</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 400px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 1rem;
+            font-size: 1.5rem;
+        }
+        p {
+            color: #666;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+        }
+        button {
+            background: #24292e;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #2f363d;
+        }
+        .icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">🔒</div>
+        <h1>認証が必要です</h1>
+        <p>このコンテンツにアクセスするには、GitHubアカウントでログインしてください。</p>
+        <button onclick="login()">GitHubでログイン</button>
+    </div>
+    <script>
+        function login() {
+            // Get the full current URL (the original URL that triggered 401)
+            const returnUrl = encodeURIComponent(window.location.href);
+            window.location.href = "/auth/github?returnTo=" + returnUrl;
+        }
+    </script>
+</body>
+</html>';
+}

@@ -6,16 +6,27 @@
 
   vars:
     app_dir: /opt/workspaces
-    # Terraform環境変数から取得（TF_VAR_*）
+    # Terraform環境変数から取得(TF_VAR_*)
     dns_zone: "{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
     domain: "ws.{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
-    github_client_id: "{{ lookup('ansible.builtin.env', 'TF_VAR_github_client_id') }}"
-    github_client_secret: "{{ lookup('ansible.builtin.env', 'TF_VAR_github_client_secret') }}"
+    ws_github_client_id: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_ID') }}"
+    ws_github_client_secret: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_SECRET') }}"
+    docs_github_client_id: "{{ lookup('ansible.builtin.env', 'DOCS_GITHUB_CLIENT_ID') }}"
+    docs_github_client_secret: "{{ lookup('ansible.builtin.env', 'DOCS_GITHUB_CLIENT_SECRET') }}"
     target_organization: "{{ lookup('ansible.builtin.env', 'TARGET_ORGANIZATION') }}"
     # email は優先的に環境変数 DEPLOYER_EMAIL から取得
     # 未設定の場合は admin@<domain> をフォールバックとして使用
     email: "{{ lookup('ansible.builtin.env', 'DEPLOYER_EMAIL') | default('admin@' ~ dns_zone) }}"
-
+    # テスト時は true, 本番時は false
+    le_staging: true
+    # 変数に応じて URL をセット (前の回答と同じロジック)
+    le_server_url: >-
+      {{
+        'https://acme-staging-v02.api.letsencrypt.org/directory'
+        if le_staging
+        else
+        'https://acme-v02.api.letsencrypt.org/directory'
+      }}
   pre_tasks:
     - name: Wait for SSH connection to be available
       ansible.builtin.wait_for_connection:
@@ -187,15 +198,36 @@
         mode: '0644'
       loop:
         - {src: '../app/', dest: '{{ app_dir }}/app/'}
+        - {src: '../docs-renew/', dest: '{{ app_dir }}/docs-renew/'}
         - {src: '../docker/', dest: '{{ app_dir }}/'}
+      register: app_files_copy
 
-    - name: Deploy initial nginx configuration (without SSL)
-      ansible.builtin.copy:
-        src: ../nginx/nginx.conf.initial
+    - name: Create symlink for auth-common.js in docs-renew
+      ansible.builtin.file:
+        src: "{{ app_dir }}/app/auth-common.js"
+        dest: "{{ app_dir }}/docs-renew/auth-common.js"
+        state: link
+        owner: ubuntu
+        group: ubuntu
+      register: auth_common_symlink
+
+    - name: Deploy production nginx configuration with SSL
+      ansible.builtin.template:
+        src: ../nginx/nginx.conf.j2
         dest: "{{ app_dir }}/nginx/nginx.conf"
         owner: ubuntu
         group: ubuntu
         mode: '0644'
+      register: nginx_conf
+
+    - name: Deploy common auth configuration
+      ansible.builtin.template:
+        src: ../nginx/auth-common.conf.j2
+        dest: "{{ app_dir }}/nginx/conf.d/auth-common.conf"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      register: nginx_auth_conf
 
     - name: Create environment file
       ansible.builtin.template:
@@ -204,10 +236,19 @@
         owner: ubuntu
         group: ubuntu
         mode: '0600'
+      register: env_file
 
     - name: Create certbot webroot directory
       ansible.builtin.file:
         path: /var/www/certbot
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create docs directory
+      ansible.builtin.file:
+        path: /var/docs
         state: directory
         owner: ubuntu
         group: ubuntu
@@ -254,53 +295,96 @@
         daemon_reload: true
       when: workspaces_service.changed
 
-    - name: Build and start Docker containers
+    - name: Build Docker containers (only if app files changed)
       ansible.builtin.command:
         cmd: docker compose build
         chdir: "{{ app_dir }}"
       become: true
       become_user: ubuntu
+      when: app_files_copy.changed or auth_common_symlink.changed or env_file.changed
       changed_when: true
-
-    - name: Enable and start workspaces service
-      ansible.builtin.systemd:
-        name: workspaces
-        enabled: true
-        state: started
-
-    - name: Wait for nginx to be ready
-      ansible.builtin.wait_for:
-        port: 80
-        delay: 5
-        timeout: 60
+      register: docker_build
 
     - name: Check if SSL certificate already exists
       ansible.builtin.stat:
         path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
       register: ssl_cert
 
-    - name: Obtain SSL certificate with certbot (webroot mode)
-      when: not ssl_cert.stat.exists
+    - name: Check if docs SSL certificate already exists
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/docs.{{ dns_zone }}/fullchain.pem"
+      register: docs_ssl_cert
+
+    - name: Obtain SSL certificates with certbot (webroot mode)
+      when: not ssl_cert.stat.exists or not docs_ssl_cert.stat.exists
       block:
-        - name: Obtain SSL certificate with certbot (webroot mode)
+        - name: Stop workspaces service
+          ansible.builtin.systemd:
+            name: workspaces
+            state: stopped
+
+        - name: Obtain SSL certificate for ws domain
           ansible.builtin.command:
             cmd: >
-              certbot certonly --webroot -w /var/www/certbot --non-interactive --agree-tos
-              --email {{ email }} -d {{ domain }} --staging
+              certbot certonly --standalone --non-interactive --agree-tos
+              --email {{ email }} -d {{ domain }} --server {{ le_server_url }}
           changed_when: true
 
-        - name: Deploy production nginx configuration with SSL
-          ansible.builtin.template:
-            src: ../nginx/nginx.conf.j2
-            dest: "{{ app_dir }}/nginx/nginx.conf"
-            owner: ubuntu
-            group: ubuntu
-            mode: '0644'
-
-        - name: Restart nginx container to use new configuration and certificates
+        - name: Obtain SSL certificate for docs domain
           ansible.builtin.command:
-            cmd: docker restart workspaces-nginx
+            cmd: >
+              certbot certonly --standalone --non-interactive --agree-tos
+              --email {{ email }} -d docs.{{ dns_zone }} --server {{ le_server_url }}
           changed_when: true
+
+        - name: Modify configuration as webroot mode (renewal conf)
+          community.general.ini_file:
+            path: /etc/letsencrypt/renewal/{{ item.domain }}.conf
+            section: renewalparams
+            option: "{{ item.option }}"
+            value: "{{ item.value }}"
+            mode: '0644'
+          loop:
+            - { domain: "{{ domain }}", option: 'authenticator', value: 'webroot' }
+            - { domain: "{{ domain }}", option: 'webroot_path', value: '/var/www/certbot' }
+            - { domain: "{{ domain }}", option: 'server', value: le_server_url }
+            - { domain: "docs.{{ dns_zone }}", option: 'authenticator', value: 'webroot' }
+            - { domain: "docs.{{ dns_zone }}", option: 'webroot_path', value: '/var/www/certbot' }
+            - { domain: "docs.{{ dns_zone }}", option: 'server', value: le_server_url }
+
+        - name: Remove standalone pre/post hooks from renewal configuration
+          community.general.ini_file:
+            path: /etc/letsencrypt/renewal/{{ item.domain }}.conf
+            section: renewalparams
+            option: "{{ item.option }}"
+            state: absent
+            mode: '0644'
+          loop:
+            - { domain: "{{ domain }}", option: 'pre_hook' }
+            - { domain: "{{ domain }}", option: 'post_hook' }
+            - { domain: "docs.{{ dns_zone }}", option: 'pre_hook' }
+            - { domain: "docs.{{ dns_zone }}", option: 'post_hook' }
+
+    - name: Enable and start workspaces service
+      ansible.builtin.systemd:
+        name: workspaces
+        enabled: true
+        state: >-
+          {{
+            'restarted' if (
+              app_files_copy.changed or
+              auth_common_symlink.changed or
+              nginx_conf.changed or
+              nginx_auth_conf.changed or
+              env_file.changed
+            ) else 'started'
+          }}
+
+    - name: Wait for nginx to be ready
+      ansible.builtin.wait_for:
+        port: 80
+        delay: 5
+        timeout: 60
 
     - name: Copy certificate renewal script
       ansible.builtin.copy:
@@ -310,12 +394,20 @@
         group: root
         mode: '0755'
 
-    - name: Set up certbot renewal cron job (daily at 3 AM)
+    - name: Set up certbot renewal cron job for workspaces (daily at 3 AM)
       ansible.builtin.cron:
-        name: "Renew Let's Encrypt certificates and reload nginx"
+        name: "Renew Let's Encrypt certificates for workspaces and reload nginx"
         minute: "0"
         hour: "3"
         job: "/usr/local/bin/renew-cert.sh {{ domain }} >> /var/log/certbot-renewal.log 2>&1"
+        user: root
+
+    - name: Set up certbot renewal cron job for docs (daily at 3:10 AM)
+      ansible.builtin.cron:
+        name: "Renew Let's Encrypt certificates for docs and reload nginx"
+        minute: "10"
+        hour: "3"
+        job: "/usr/local/bin/renew-cert.sh docs.{{ dns_zone }} >> /var/log/certbot-renewal.log 2>&1"
         user: root
 
     - name: Wait for application to be ready

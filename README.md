@@ -6,13 +6,24 @@
 
 このプロジェクトは、さくらのクラウド上でGitHub CodeSpacesに似た機能を提供します：
 
+### ワークスペース機能 (ws.yourdomain.com)
 - GitHub OAuthによる認証（PKCE & stateパラメータによるセキュリティ強化）
 - ユーザーごとのワークスペース管理
 - GitリポジトリからのワークスペースのClone
 - code-serverによるブラウザベースのVS Code環境
 - devcontainer.jsonのサポート
-- Let's EncryptによるSSL/TLS証明書の自動取得
+- 組織ベースのアクセス制御
+
+### ドキュメントサイト機能 (docs.yourdomain.com)
+- GitHub Pagesからの自動デプロイ
+- GitHub OAuth認証による更新機能
+- `${TARGET_ORGANIZATION}/docusaurus`リポジトリのgh-pagesブランチを公開
+- https://docs.yourdomain.com/.renew でドキュメント更新
+
+### 共通機能
+- Let's EncryptによるSSL/TLS証明書の自動取得・更新
 - Nginx + Node.js + SQLite3によるWebサービス
+- さくらのクラウドDNSとの統合
 
 ## アーキテクチャ
 
@@ -54,13 +65,24 @@
 
 ### GitHub OAuth App
 
-GitHubで新しいOAuth Appを作成してください：
+GitHubで2つのOAuth Appを作成してください：
+
+#### 1. Workspaces用 (ws.your-domain.com)
 
 1. GitHub Settings → Developer settings → OAuth Apps → New OAuth App
 2. 以下の情報を設定：
    - Application name: `Workspaces`
    - Homepage URL: `https://ws.your-domain.com`
    - Authorization callback URL: `https://ws.your-domain.com/auth/github/callback`
+3. Client IDとClient Secretを控えておく
+
+#### 2. Docs用 (docs.your-domain.com)
+
+1. GitHub Settings → Developer settings → OAuth Apps → New OAuth App
+2. 以下の情報を設定：
+   - Application name: `Docs`
+   - Homepage URL: `https://docs.your-domain.com`
+   - Authorization callback URL: `https://docs.your-domain.com/auth/github/callback`
 3. Client IDとClient Secretを控えておく
 
 ### アクセス制御（TARGET_ORGANIZATION）
@@ -102,8 +124,10 @@ TF_VAR_SAKURA_SECRET=<さくらのクラウドのシークレット>
 TF_VAR_SSH_PUBLIC_KEY=<~/.ssh/id_rsa.pubの内容>
 TF_VAR_DOMAIN=<DNSゾーンのサブドメイン名（例: example.com）>
 TF_VAR_DNS_SERVICE_ID=<さくらのクラウドDNSサービスID>
-TF_VAR_GITHUB_CLIENT_ID=<GitHub OAuth AppのClient ID>
-TF_VAR_GITHUB_CLIENT_SECRET=<GitHub OAuth AppのClient Secret>
+WS_GITHUB_CLIENT_ID=<Workspaces用 GitHub OAuth AppのClient ID>
+WS_GITHUB_CLIENT_SECRET=<Workspaces用 GitHub OAuth AppのClient Secret>
+DOCS_GITHUB_CLIENT_ID=<Docs用 GitHub OAuth AppのClient ID>
+DOCS_GITHUB_CLIENT_SECRET=<Docs用 GitHub OAuth AppのClient Secret>
 TARGET_ORGANIZATION=<アクセスを許可するGitHub組織名>
 DEPLOYER_EMAIL=<SSL証明書の期限切れ警告メールを受け取るメールアドレス>
 ```
@@ -128,9 +152,13 @@ export TF_VAR_domain="your-domain.com"
 # さくらのクラウドDNSサービスID
 export TF_VAR_dns_service_id="123456789012"
 
-# GitHub OAuth
-export TF_VAR_github_client_id="your-github-client-id"
-export TF_VAR_github_client_secret="your-github-client-secret"
+# GitHub OAuth - Workspaces用
+export WS_GITHUB_CLIENT_ID="your-ws-github-client-id"
+export WS_GITHUB_CLIENT_SECRET="your-ws-github-client-secret"
+
+# GitHub OAuth - Docs用
+export DOCS_GITHUB_CLIENT_ID="your-docs-github-client-id"
+export DOCS_GITHUB_CLIENT_SECRET="your-docs-github-client-secret"
 
 # アクセスを許可するGitHub組織名
 export TARGET_ORGANIZATION="your-github-org"

@@ -71,7 +71,7 @@ http {
         return 400 "Bad Request: Invalid Host Header\n";
     }
 
-    # HTTP server - redirect to HTTPS
+    # HTTP server - redirect to HTTPS (workspaces)
     server {
         listen 80;
         server_name {{ domain }};
@@ -87,12 +87,33 @@ http {
         }
     }
 
-    upstream workspace_workspaces_app {
-        zone upstream_dynamic 64k;
-        server workspaces-app:3000 resolve;
+    # HTTP server - redirect to HTTPS (docs)
+    server {
+        listen 80;
+        server_name docs.{{ dns_zone }};
+        
+        # Allow Let's Encrypt challenges
+        location /.well-known/acme-challenge/ {
+            root /var/www/certbot;
+        }
+        
+        # Redirect all other HTTP to HTTPS
+        location / {
+            return 301 https://$server_name$request_uri;
+        }
     }
 
-    # HTTPS server - main application
+    upstream workspace_workspaces_server {
+        zone upstream_dynamic 64k;
+        server workspaces-server:3000 resolve;
+    }
+
+    upstream docs_renew_service {
+        zone upstream_dynamic 64k;
+        server docs-renew:3001 resolve max_fails=0;
+    }
+
+    # HTTPS server - main application (workspaces)
     server {
         listen 443 ssl;
         http2 on;
@@ -113,12 +134,15 @@ http {
             return 200 "User-agent: *\nDisallow: /\n";
         }
 
+        # Include common auth configuration
+        include /etc/nginx/conf.d/auth-common.conf;
+
         # Include workspace-specific location configurations
         include /etc/nginx/conf.d/*.location.conf;
 
         # Main application (fallback - must be last)
         location / {
-            proxy_pass http://workspace_workspaces_app;
+            proxy_pass http://workspace_workspaces_server;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
@@ -134,4 +158,96 @@ http {
             add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0" always;
         }
     }
+
+    # HTTPS server - documentation site
+    server {
+        listen 443 ssl;
+        http2 on;
+        server_name docs.{{ dns_zone }};
+
+        ssl_certificate /etc/letsencrypt/live/docs.{{ dns_zone }}/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/docs.{{ dns_zone }}/privkey.pem;
+
+        # Security headers
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+
+        # Root directory for documentation
+        root /var/docs/docusaurus;
+        index index.html;
+
+        # Block search engine crawlers
+        location = /robots.txt {
+            add_header Content-Type text/plain;
+            return 200 "User-agent: *\nDisallow: /\n";
+        }
+
+        # Auth verification endpoint (internal only, called by auth_request)
+        location = /auth/verify {
+            internal;
+            proxy_pass http://docs_renew_service/api/auth/verify;
+            proxy_pass_request_body off;
+            proxy_set_header Content-Length "";
+            proxy_set_header X-Original-URI $request_uri;
+            proxy_set_header Cookie $http_cookie;
+        }
+
+        # Auth login page
+        location = /auth/login.html {
+            proxy_pass http://docs_renew_service/login.html?returnTo=$request_uri;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Proxy auth endpoints to docs-renew service (for OAuth flow)
+        location ~ ^/(auth(/github/callback)?|api/auth|auth/failed|health|login\.html) {
+            proxy_pass http://docs_renew_service;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Cookie $http_cookie;
+            proxy_read_timeout 300;
+        }
+
+        # Documentation renewal endpoint (requires authentication)
+        location = /.renew {
+            auth_request /auth/verify;
+            error_page 401 = /auth/login.html;
+            
+            proxy_pass http://docs_renew_service/renew;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Cookie $http_cookie;
+            proxy_read_timeout 300;
+        }
+
+        # Hide .git directory
+        location ~ /\.git {
+            return 404;
+        }
+
+        # Serve static documentation files (requires authentication)
+        location / {
+            auth_request /auth/verify;
+            error_page 401 = /auth/login.html;
+            
+            try_files $uri $uri/ =404;
+            
+            # Enable caching for static assets
+            location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+                expires 1y;
+                add_header Cache-Control "public, immutable";
+            }
+        }
+    }
 }
+

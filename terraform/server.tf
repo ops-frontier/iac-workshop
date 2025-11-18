@@ -14,9 +14,7 @@ resource "sakuracloud_note" "startup" {
   name = "${var.server_name}-startup-script"
   
   content = templatefile("${path.module}/startup-script.sh", {
-    domain               = "ws.${var.domain}"
-    github_client_id     = var.github_client_id
-    github_client_secret = var.github_client_secret
+    domain = "ws.${var.domain}"
   })
 }
 
@@ -170,10 +168,19 @@ resource "sakuracloud_disk" "main" {
   size              = var.disk_size
 }
 
-# DNS Record for the server
+# DNS Record for the workspaces server
 resource "sakuracloud_dns_record" "ws" {
   dns_id = var.dns_service_id
   name   = "ws"
+  type   = "A"
+  value  = sakuracloud_server.main.ip_address
+  ttl    = 1200
+}
+
+# DNS Record for the docs server
+resource "sakuracloud_dns_record" "docs" {
+  dns_id = var.dns_service_id
+  name   = "docs"
   type   = "A"
   value  = sakuracloud_server.main.ip_address
   ttl    = 1200

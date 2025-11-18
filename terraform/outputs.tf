@@ -18,9 +18,19 @@ output "service_url" {
   value       = "https://ws.${var.domain}"
 }
 
+output "docs_url" {
+  description = "Documentation URL"
+  value       = "https://docs.${var.domain}"
+}
+
 output "hostname" {
   description = "Service hostname"
   value       = "ws.${var.domain}"
+}
+
+output "docs_hostname" {
+  description = "Documentation hostname"
+  value       = "docs.${var.domain}"
 }
 
 output "ansible_inventory" {

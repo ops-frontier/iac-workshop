@@ -58,11 +58,23 @@ check_item $? "TF_VAR_ssh_public_key"
 [ -n "$TF_VAR_domain" ]
 check_item $? "TF_VAR_domain"
 
-[ -n "$TF_VAR_github_client_id" ]
-check_item $? "TF_VAR_github_client_id"
+[ -n "$TF_VAR_dns_service_id" ]
+check_item $? "TF_VAR_dns_service_id"
 
-[ -n "$TF_VAR_github_client_secret" ]
-check_item $? "TF_VAR_github_client_secret"
+[ -n "$WS_GITHUB_CLIENT_ID" ]
+check_item $? "WS_GITHUB_CLIENT_ID"
+
+[ -n "$WS_GITHUB_CLIENT_SECRET" ]
+check_item $? "WS_GITHUB_CLIENT_SECRET"
+
+[ -n "$DOCS_GITHUB_CLIENT_ID" ]
+check_item $? "DOCS_GITHUB_CLIENT_ID"
+
+[ -n "$DOCS_GITHUB_CLIENT_SECRET" ]
+check_item $? "DOCS_GITHUB_CLIENT_SECRET"
+
+[ -n "$TARGET_ORGANIZATION" ]
+check_item $? "TARGET_ORGANIZATION"
 
 echo ""
 echo "## プロジェクトファイルの確認"
@@ -85,10 +97,16 @@ check_item $? "nginx/nginx.conf"
 echo ""
 echo "## GitHub OAuth App の設定確認"
 
-if [ -n "$TF_VAR_domain" ] && [ -n "$TF_VAR_github_client_id" ]; then
+if [ -n "$TF_VAR_domain" ]; then
     echo "GitHub OAuth App の設定を確認してください:"
-    echo "  Homepage URL: https://$TF_VAR_domain"
-    echo "  Callback URL: https://$TF_VAR_domain/auth/github/callback"
+    echo ""
+    echo "1. Workspaces用 (ws.$TF_VAR_domain)"
+    echo "   Homepage URL: https://ws.$TF_VAR_domain"
+    echo "   Callback URL: https://ws.$TF_VAR_domain/auth/github/callback"
+    echo ""
+    echo "2. Docs用 (docs.$TF_VAR_domain)"
+    echo "   Homepage URL: https://docs.$TF_VAR_domain"
+    echo "   Callback URL: https://docs.$TF_VAR_domain/auth/github/callback"
 fi
 
 echo ""

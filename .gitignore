@@ -58,6 +58,9 @@ app/data/*.db-*
 ssl/
 logs/
 
+# Symlinked files (managed by deployment)
+docs-renew/auth-common.js
+
 # SSH keys
 *.pem
 *.key
