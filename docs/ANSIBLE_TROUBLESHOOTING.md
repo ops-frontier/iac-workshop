@@ -65,7 +65,7 @@ playbook: playbook.yml
 ### 症状
 
 ```
-[WARNING]: Ansible is being run in a world writable directory (/workspaces/pseudo-code-spaces-sakura/ansible), 
+[WARNING]: Ansible is being run in a world writable directory (/workspaces/pseudo-work-spaces-sakura/ansible), 
 ignoring it as an ansible.cfg source.
 ```
 
@@ -85,7 +85,7 @@ ANSIBLE_CONFIG=ansible.cfg ansible-playbook -i inventory.ini playbook.yml
 #### オプションB: ディレクトリの権限を変更（ローカル環境のみ）
 
 ```bash
-chmod 755 /workspaces/pseudo-code-spaces-sakura/ansible
+chmod 755 /workspaces/pseudo-work-spaces-sakura/ansible
 ```
 
 **注意**: CodeSpaces環境では再起動後にリセットされるため、オプションAを推奨します。
@@ -140,7 +140,7 @@ SSHポート（22）が許可されているか確認。
 ### 症状
 
 ```
-ERROR: Error reading config file (/workspaces/pseudo-code-spaces-sakura/ansible/ansible.cfg): 
+ERROR: Error reading config file (/workspaces/pseudo-work-spaces-sakura/ansible/ansible.cfg): 
 File contains no section headers.
 ```
 

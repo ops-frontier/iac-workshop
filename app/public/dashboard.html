@@ -289,6 +289,11 @@
             display: flex;
         }
 
+        /* Environment variable modal should be on top of workspace modal */
+        #envVarModal {
+            z-index: 1100;
+        }
+
         .modal-content {
             background: white;
             border-radius: 12px;
@@ -371,6 +376,63 @@
         }
 
         /* Responsive design for header */
+        .env-var-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        .env-var-item:last-child {
+            border-bottom: none;
+        }
+
+        .env-var-item:hover {
+            background-color: #f9fafb;
+        }
+
+        .env-var-name {
+            font-family: monospace;
+            font-weight: 600;
+            color: #1f2937;
+            flex: 1;
+        }
+
+        .env-var-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .env-var-actions button {
+            padding: 4px 8px;
+            font-size: 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            background: transparent;
+            color: #6b7280;
+        }
+
+        .env-var-actions button:hover {
+            background: #e5e7eb;
+        }
+
+        .env-var-actions .edit-btn:hover {
+            color: #3b82f6;
+        }
+
+        .env-var-actions .delete-btn:hover {
+            color: #ef4444;
+        }
+
+        .empty-env-vars {
+            padding: 20px;
+            text-align: center;
+            color: #9ca3af;
+            font-size: 14px;
+        }
+
         @media (max-width: 768px) {
             .header {
                 flex-direction: column;
@@ -425,6 +487,52 @@
         </div>
     </div>
 
+    <!-- Environment Variable Modal -->
+    <div id="envVarModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header" id="envVarModalTitle">環境変数を追加</div>
+            <form id="envVarForm" onsubmit="saveEnvVar(event)">
+                <div class="form-group">
+                    <label for="envVarName">変数名</label>
+                    <input type="text" id="envVarName" required 
+                           pattern="[A-Z_][A-Z0-9_]*" 
+                           placeholder="VARIABLE_NAME"
+                           title="大文字、数字、アンダースコアのみ（先頭は大文字またはアンダースコア）">
+                </div>
+                <div class="form-group">
+                    <label for="envVarValue">値</label>
+                    <textarea id="envVarValue" required 
+                              style="width: 100%; min-height: 100px; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; font-family: monospace; resize: vertical;"
+                              placeholder="variable value"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" onclick="hideEnvVarModal()">キャンセル</button>
+                    <button type="submit" class="btn btn-primary">保存</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Workspace Environment Variables Edit Modal -->
+    <div id="workspaceEnvModal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header" id="workspaceEnvModalTitle">環境変数の設定</div>
+            <div class="form-group">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <label>環境変数</label>
+                    <button type="button" class="btn btn-primary" onclick="addWorkspaceEnvVar()" style="padding: 4px 12px; font-size: 14px;">+ 変数追加</button>
+                </div>
+                <div id="workspaceEnvVarsList" style="border: 1px solid #d1d5db; border-radius: 6px; max-height: 300px; overflow-y: auto;">
+                    <div class="empty-env-vars">環境変数が設定されていません</div>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn" onclick="hideWorkspaceEnvModal()">キャンセル</button>
+                <button type="button" id="workspaceEnvModalSaveBtn" class="btn btn-primary" onclick="saveWorkspaceEnvVars()" disabled>保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- New Workspace Modal -->
     <div id="newWorkspaceModal" class="modal">
         <div class="modal-content">
@@ -446,9 +554,14 @@
                 </div>
                 <div class="form-group">
                     <label for="envVars">環境変数 (オプション)</label>
-                    <input type="text" id="envVars" 
-                           placeholder="KEY1=value1,KEY2=value2"
-                           title="カンマ区切りでKEY=VALUE形式で入力">
+                    <div style="margin-bottom: 12px;">
+                        <button type="button" class="btn btn-secondary" onclick="showAddEnvVarModal()" style="font-size: 14px;">
+                            + 変数追加
+                        </button>
+                    </div>
+                    <div id="envVarsList" style="border: 1px solid #d1d5db; border-radius: 6px; max-height: 200px; overflow-y: auto;">
+                        <!-- Environment variables will be listed here -->
+                    </div>
                 </div>
                 <div class="form-actions">
                     <button type="button" class="btn" onclick="hideNewWorkspaceModal()">キャンセル</button>
@@ -463,6 +576,12 @@
         let workspaces = [];
         let eventSource = null;
         let availableRepositories = [];
+        let envVars = {}; // Store environment variables as key-value pairs
+        let editingEnvVarName = null; // Track which env var is being edited
+        let workspaceEnvVars = {}; // Store workspace environment variables for editing
+        let initialWorkspaceEnvVars = null; // Store initial env vars to detect changes
+        let editingWorkspaceId = null; // Track which workspace we're editing
+        let editingWorkspaceName = null; // Track workspace name for editing
 
         // Load user info
         async function loadUserInfo() {
@@ -660,6 +779,11 @@
                                     ${isProcessing ? 'disabled' : ''}>
                                 ログ
                             </button>
+                            <button class="btn btn-secondary" 
+                                    onclick="editWorkspaceEnvVars(${ws.id}, '${ws.name}')"
+                                    ${isProcessing ? 'disabled' : ''}>
+                                環境変数
+                            </button>
                         ` : ''}
                     </div>
                 </div>
@@ -729,6 +853,10 @@
                 // Update datalist with available repositories
                 updateRepositoryDatalist();
                 
+                // Reset environment variables
+                envVars = {};
+                renderEnvVarsList();
+                
                 document.getElementById('newWorkspaceModal').classList.add('active');
                 document.getElementById('workspaceName').focus();
             } catch (error) {
@@ -740,6 +868,219 @@
         function hideNewWorkspaceModal() {
             document.getElementById('newWorkspaceModal').classList.remove('active');
             document.getElementById('newWorkspaceForm').reset();
+            envVars = {};
+            editingEnvVarName = null;
+            renderEnvVarsList();
+        }
+        
+        // Workspace environment variables management functions
+        async function editWorkspaceEnvVars(workspaceId, workspaceName) {
+            editingWorkspaceId = workspaceId;
+            editingWorkspaceName = workspaceName;
+            
+            // Fetch current environment variables
+            try {
+                const response = await fetch(`/api/workspaces/${workspaceId}/env-vars`);
+                if (response.status === 401) {
+                    alert('セッションが切れています。ログインし直してください');
+                    window.location.href = '/';
+                    return;
+                }            
+                if (!response.ok) {
+                    throw new Error('環境変数の取得に失敗しました');
+                }
+                const data = await response.json();
+                workspaceEnvVars = data.envVars || {};
+                initialWorkspaceEnvVars = JSON.stringify(workspaceEnvVars);
+                
+                document.getElementById('workspaceEnvModalTitle').textContent = `環境変数の設定: ${workspaceName}`;
+                renderWorkspaceEnvVarsList();
+                document.getElementById('workspaceEnvModal').classList.add('active');
+            } catch (error) {
+                console.error('Error fetching env vars:', error);
+                alert('エラー: ' + error.message);
+            }
+        }
+        
+        function renderWorkspaceEnvVarsList() {
+            const container = document.getElementById('workspaceEnvVarsList');
+            const keys = Object.keys(workspaceEnvVars);
+            
+            if (keys.length === 0) {
+                container.innerHTML = '<div class="empty-env-vars">環境変数が設定されていません</div>';
+                return;
+            }
+            
+            container.innerHTML = keys.map(key => `
+                <div class="env-var-item">
+                    <div class="env-var-name">${escapeHtml(key)}</div>
+                    <div class="env-var-actions">
+                        <button type="button" class="edit-btn" onclick="editWorkspaceEnvVarItem('${escapeHtml(key)}')" title="編集">
+                            ✏️
+                        </button>
+                        <button type="button" class="delete-btn" onclick="deleteWorkspaceEnvVar('${escapeHtml(key)}')" title="削除">
+                            🗑️
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+
+            if (initialWorkspaceEnvVars) {
+                const currentWorkspaceEnvVars = JSON.stringify(workspaceEnvVars);
+                if (currentWorkspaceEnvVars !== initialWorkspaceEnvVars) {
+                    // There are unsaved changes
+                    document.getElementById('workspaceEnvModalSaveBtn').disabled = false;
+                } else {
+                    document.getElementById('workspaceEnvModalSaveBtn').disabled = true;
+                }
+            }
+        }
+        
+        function addWorkspaceEnvVar() {
+            editingEnvVarName = null;
+            document.getElementById('envVarModalTitle').textContent = '環境変数を追加';
+            document.getElementById('envVarName').value = '';
+            document.getElementById('envVarName').disabled = false;
+            document.getElementById('envVarValue').value = '';
+            document.getElementById('envVarModal').classList.add('active');
+        }
+        
+        function editWorkspaceEnvVarItem(name) {
+            editingEnvVarName = name;
+            document.getElementById('envVarModalTitle').textContent = '環境変数を編集';
+            document.getElementById('envVarName').value = name;
+            document.getElementById('envVarName').disabled = true;
+            document.getElementById('envVarValue').value = workspaceEnvVars[name] || '';
+            document.getElementById('envVarModal').classList.add('active');
+        }
+        
+        function deleteWorkspaceEnvVar(name) {
+            if (confirm(`環境変数 "${name}" を削除しますか？`)) {
+                delete workspaceEnvVars[name];
+                renderWorkspaceEnvVarsList();
+            }
+        }
+        
+        async function saveWorkspaceEnvVars() {
+            try {
+                // Save environment variables
+                const response = await fetch(`/api/workspaces/${editingWorkspaceId}/env-vars`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ envVars: workspaceEnvVars })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || '環境変数の保存に失敗しました');
+                }
+                
+                // Ask user if they want to rebuild
+                const shouldRebuild = confirm('環境変数の変更を反映するためには再ビルドが必要です。再ビルドしますか？');
+
+                // save workspaceId for rebuild after hiding modal
+                const rebuildWorkspaceId = editingWorkspaceId;
+                
+                hideWorkspaceEnvModal();
+                
+                if (shouldRebuild) {
+                    // Trigger rebuild
+                    rebuildWorkspace(rebuildWorkspaceId, true);
+                } else {
+                    alert('環境変数を保存しました。次回の再ビルド時に反映されます。');
+                }
+            } catch (error) {
+                console.error('Error saving env vars:', error);
+                alert('エラー: ' + error.message);
+            }
+        }
+        
+        // Environment variable management functions
+        function renderEnvVarsList() {
+            const container = document.getElementById('envVarsList');
+            const keys = Object.keys(envVars);
+            
+            if (keys.length === 0) {
+                container.innerHTML = '<div class="empty-env-vars">環境変数が設定されていません</div>';
+                return;
+            }
+            
+            container.innerHTML = keys.map(key => `
+                <div class="env-var-item">
+                    <div class="env-var-name">${escapeHtml(key)}</div>
+                    <div class="env-var-actions">
+                        <button type="button" class="edit-btn" onclick="editEnvVar('${escapeHtml(key)}')" title="編集">
+                            ✏️
+                        </button>
+                        <button type="button" class="delete-btn" onclick="deleteEnvVar('${escapeHtml(key)}')" title="削除">
+                            🗑️
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        function showAddEnvVarModal() {
+            editingEnvVarName = null;
+            document.getElementById('envVarModalTitle').textContent = '環境変数を追加';
+            document.getElementById('envVarName').disabled = false;
+            document.getElementById('envVarName').value = '';
+            document.getElementById('envVarValue').value = '';
+            document.getElementById('envVarModal').classList.add('active');
+            document.getElementById('envVarName').focus();
+        }
+        
+        function editEnvVar(name) {
+            editingEnvVarName = name;
+            document.getElementById('envVarModalTitle').textContent = '環境変数を編集';
+            document.getElementById('envVarName').value = name;
+            document.getElementById('envVarName').disabled = true;
+            document.getElementById('envVarValue').value = envVars[name] || '';
+            document.getElementById('envVarModal').classList.add('active');
+            document.getElementById('envVarValue').focus();
+        }
+        
+        function deleteEnvVar(name) {
+            if (confirm(`環境変数 "${name}" を削除しますか？`)) {
+                delete envVars[name];
+                renderEnvVarsList();
+            }
+        }
+        
+        function hideEnvVarModal() {
+            document.getElementById('envVarModal').classList.remove('active');
+            document.getElementById('envVarForm').reset();
+            editingEnvVarName = null;
+        }
+        
+        function saveEnvVar(event) {
+            event.preventDefault();
+            
+            const name = document.getElementById('envVarName').value.trim();
+            const value = document.getElementById('envVarValue').value;
+            
+            // Check if we're editing workspace env vars or new workspace env vars
+            if (editingWorkspaceId !== null) {
+                // Editing workspace environment variables
+                if (!editingEnvVarName && workspaceEnvVars.hasOwnProperty(name)) {
+                    alert(`環境変数 "${name}" は既に存在します。`);
+                    return;
+                }
+                workspaceEnvVars[name] = value;
+                hideEnvVarModal();
+                editingEnvVarName = null;
+                renderWorkspaceEnvVarsList();
+            } else {
+                // New workspace environment variables
+                if (!editingEnvVarName && envVars.hasOwnProperty(name)) {
+                    alert(`環境変数 "${name}" は既に存在します。`);
+                    return;
+                }
+                envVars[name] = value;
+                hideEnvVarModal();
+                editingEnvVarName = null;
+                renderEnvVarsList();
+            }
         }
         
         // Update datalist with available repositories
@@ -770,7 +1111,6 @@
             event.preventDefault();
             
             const name = document.getElementById('workspaceName').value.trim();
-            const envVarsInput = document.getElementById('envVars').value;
             
             // Validate that the selected repository is available
             const isAvailable = availableRepositories.some(repo => repo.name === name);
@@ -779,16 +1119,8 @@
                 return;
             }
             
-            // Parse environment variables
-            const envVars = {};
-            if (envVarsInput.trim()) {
-                envVarsInput.split(',').forEach(pair => {
-                    const [key, ...valueParts] = pair.split('=');
-                    if (key && valueParts.length > 0) {
-                        envVars[key.trim()] = valueParts.join('=').trim();
-                    }
-                });
-            }
+            // Save envVars before closing modal (hideNewWorkspaceModal resets envVars)
+            const envVarsToSend = { ...envVars };
             
             // Close dialog immediately
             hideNewWorkspaceModal();
@@ -797,7 +1129,7 @@
             fetch('/api/workspaces', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, envVars })
+                body: JSON.stringify({ name, envVars: envVarsToSend })
             })
             .then(response => {
                 if (response.status === 401) {
@@ -967,8 +1299,8 @@
         }
 
         // Rebuild workspace
-        function rebuildWorkspace(id) {
-            if (!confirm('このワークスペースを再ビルドしますか？')) {
+        function rebuildWorkspace(id, confirmRebuild = false) {
+            if (!confirmRebuild && !confirm('このワークスペースを再ビルドしますか？')) {
                 return;
             }
             
@@ -1028,6 +1360,15 @@
                 console.error('Error downloading build log:', error);
                 alert('エラー: ' + error.message);
             }
+        }
+        
+        function hideWorkspaceEnvModal() {
+            document.getElementById('workspaceEnvModal').classList.remove('active');
+            workspaceEnvVars = {};
+            editingWorkspaceId = null;
+            editingWorkspaceName = null;
+            editingEnvVarName = null;
+            initialWorkspaceEnvVars = null;
         }
 
         // Logout

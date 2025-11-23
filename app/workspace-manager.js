@@ -170,7 +170,10 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
       originalDevcontainerBackup = originalContent;
       buildLogger.debug('Original devcontainer.json backed up');
       
-      // Parse and modify devcontainer.json to add container name and network
+      // Debug log to check envVars
+      buildLogger.info({ envVars, envVarsType: typeof envVars, envVarsKeys: envVars ? Object.keys(envVars) : null }, 'Received envVars parameter');
+      
+      // Parse and modify devcontainer.json to add container name, network, and environment variables
       const devcontainerConfig = JSON.parse(originalContent);
       devcontainerConfig.runArgs = devcontainerConfig.runArgs || [];
       
@@ -194,6 +197,16 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
         '--name', containerName,
         '--network', networkName
       ];
+      
+      // Add environment variables to containerEnv
+      if (envVars && Object.keys(envVars).length > 0) {
+        devcontainerConfig.containerEnv = devcontainerConfig.containerEnv || {};
+        Object.assign(devcontainerConfig.containerEnv, envVars);
+        buildLogger.info({ envVars: Object.keys(envVars) }, 'Added environment variables to devcontainer.json');
+        await writeToBuildLog(buildLogFile, `Added ${Object.keys(envVars).length} environment variable(s) to devcontainer.json\n`);
+      } else {
+        buildLogger.info('No environment variables to add (envVars is empty or undefined)');
+      }
       
       await fs.writeFile(devcontainerPath, JSON.stringify(devcontainerConfig, null, 2));
       buildLogger.info({ containerName, networkName }, 'Added container name and network to devcontainer.json runArgs');
@@ -222,6 +235,10 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
     
     try {
       await fs.mkdir(devcontainerDir, { recursive: true });
+      
+      // Debug log to check envVars
+      buildLogger.info({ envVars, envVarsType: typeof envVars, envVarsKeys: envVars ? Object.keys(envVars) : null }, 'Received envVars for default devcontainer');
+      
       const devcontainerConfig = {
         name: containerName,
         image: defaultImage,
@@ -236,6 +253,16 @@ async function buildWithDevcontainerCLI(workspaceDir, username, workspaceName, e
           }
         }
       };
+      
+      // Add environment variables if provided
+      if (envVars && Object.keys(envVars).length > 0) {
+        devcontainerConfig.containerEnv = envVars;
+        buildLogger.info({ envVars: Object.keys(envVars) }, 'Added environment variables to default devcontainer.json');
+        await writeToBuildLog(buildLogFile, `Added ${Object.keys(envVars).length} environment variable(s)\n`);
+      } else {
+        buildLogger.info('No environment variables to add for default devcontainer (envVars is empty or undefined)');
+      }
+      
       await fs.writeFile(devcontainerPath, JSON.stringify(devcontainerConfig, null, 2));
       await writeToBuildLog(buildLogFile, retryWithDefault ? `Created fallback devcontainer.json\n` : `Created temporary devcontainer.json\n`);
       tempDevcontainerCreated = true;

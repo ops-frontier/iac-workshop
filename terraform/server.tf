@@ -3,6 +3,15 @@ data "sakuracloud_archive" "ubuntu" {
   os_type = "ubuntu2404"
 }
 
+# Get internal switch by name (if specified)
+data "sakuracloud_switch" "internal" {
+  count = var.internal_switch_name != "" ? 1 : 0
+  
+  filter {
+    names = [var.internal_switch_name]
+  }
+}
+
 # SSH Key resource
 resource "sakuracloud_ssh_key" "main" {
   name       = "${var.server_name}-key"
@@ -200,6 +209,15 @@ resource "sakuracloud_server" "main" {
   network_interface {
     upstream         = "shared"
     packet_filter_id = sakuracloud_packet_filter.main.id
+  }
+
+  # セカンダリNIC（内部ネットワーク用）
+  # internal_switch_nameが指定されている場合のみ追加
+  dynamic "network_interface" {
+    for_each = var.internal_switch_name != "" ? [1] : []
+    content {
+      upstream = data.sakuracloud_switch.internal[0].id
+    }
   }
 
   # 通常イメージの場合、disk_edit_parameterを使用してディスクを編集

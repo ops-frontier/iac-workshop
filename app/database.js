@@ -63,6 +63,19 @@ function initialize() {
     console.error('Migration error:', error);
   }
   
+  // Migration: Add env_vars column to workspaces table if it doesn't exist
+  try {
+    const wsColumns = db.prepare("PRAGMA table_info(workspaces)").all();
+    const hasEnvVars = wsColumns.some(col => col.name === 'env_vars');
+    
+    if (!hasEnvVars) {
+      db.exec('ALTER TABLE workspaces ADD COLUMN env_vars TEXT DEFAULT NULL');
+      console.log('Migration: Added env_vars column to workspaces table');
+    }
+  } catch (error) {
+    console.error('Migration error:', error);
+  }
+  
   // Migration: Make user_id nullable and change UNIQUE constraint for workspace sharing
   // SQLite doesn't support modifying constraints directly, so we need to recreate the table
   try {
@@ -170,6 +183,11 @@ function getWorkspace(id) {
   return stmt.get(id);
 }
 
+function updateWorkspaceEnvVars(id, envVarsJson) {
+  const stmt = db.prepare('UPDATE workspaces SET env_vars = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+  return stmt.run(envVarsJson, id);
+}
+
 function updateWorkspaceStatus(id, status, expectedStatus = null) {
   // If expectedStatus is provided, perform atomic update with status check
   if (expectedStatus !== null) {
@@ -246,5 +264,6 @@ module.exports = {
   updateWorkspaceOwner,
   releaseWorkspace,
   acquireWorkspace,
-  deleteWorkspace
+  deleteWorkspace,
+  updateWorkspaceEnvVars
 };

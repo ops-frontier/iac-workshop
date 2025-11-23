@@ -1,6 +1,16 @@
 output "server_ip" {
-  description = "Global IP address of the server"
+  description = "Server IP address"
   value       = sakuracloud_server.main.ip_address
+}
+
+output "internal_switch_name" {
+  description = "Internal switch name"
+  value       = var.internal_switch_name
+}
+
+output "internal_nic_ip" {
+  description = "Internal NIC IP address in CIDR format"
+  value       = var.internal_nic_ip
 }
 
 output "server_id" {

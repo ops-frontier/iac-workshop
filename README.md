@@ -102,8 +102,8 @@ GitHubで2つのOAuth Appを作成してください：
 ### 1. リポジトリをClone
 
 ```bash
-git clone https://github.com/your-username/pseudo-code-spaces-sakura.git
-cd pseudo-code-spaces-sakura
+git clone https://github.com/your-username/work-spaces-sakura.git
+cd work-spaces-sakura
 ```
 
 ### 2. GitHub CodeSpacesまたはDev Containerで開く
@@ -122,8 +122,11 @@ cd pseudo-code-spaces-sakura
 TF_VAR_SAKURA_TOKEN=<さくらのクラウドのトークン>
 TF_VAR_SAKURA_SECRET=<さくらのクラウドのシークレット>
 TF_VAR_SSH_PUBLIC_KEY=<~/.ssh/id_rsa.pubの内容>
+SSH_PRIVATE_KEY=<~/.ssh/id_rsaの内容（秘密鍵）>
 TF_VAR_DOMAIN=<DNSゾーンのサブドメイン名（例: example.com）>
 TF_VAR_DNS_SERVICE_ID=<さくらのクラウドDNSサービスID>
+TF_VAR_INTERNAL_SWITCH_NAME=<内部スイッチ名（オプション）>
+TF_VAR_INTERNAL_NIC_IP=<内部NICのIPアドレス CIDR形式（オプション、例: 192.168.100.10/24）>
 WS_GITHUB_CLIENT_ID=<Workspaces用 GitHub OAuth AppのClient ID>
 WS_GITHUB_CLIENT_SECRET=<Workspaces用 GitHub OAuth AppのClient Secret>
 DOCS_GITHUB_CLIENT_ID=<Docs用 GitHub OAuth AppのClient ID>
@@ -146,11 +149,19 @@ export TF_VAR_sakura_secret="your-sakura-secret"
 # SSH公開鍵（~/.ssh/id_rsa.pubの内容）
 export TF_VAR_ssh_public_key="ssh-rsa AAAA..."
 
+# SSH秘密鍵（~/.ssh/id_rsaの内容）
+export SSH_PRIVATE_KEY="$(cat ~/.ssh/id_rsa)"
+
 # ドメイン（DNSゾーンのサブドメイン名）
 export TF_VAR_domain="your-domain.com"
 
 # さくらのクラウドDNSサービスID
 export TF_VAR_dns_service_id="123456789012"
+
+# 内部ネットワーク設定（オプション）
+# セカンダリNICを追加する場合に設定
+export TF_VAR_internal_switch_name="your-switch-name"
+export TF_VAR_internal_nic_ip="192.168.100.10/24"
 
 # GitHub OAuth - Workspaces用
 export WS_GITHUB_CLIENT_ID="your-ws-github-client-id"

@@ -762,6 +762,53 @@ app.post('/api/workspaces/:id/stop', ensureAuthenticatedAPI, async (req, res) =>
   }
 });
 
+// Get workspace environment variables
+app.get('/api/workspaces/:id/env-vars', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
+  try {
+    const workspace = db.getWorkspace(req.params.id);
+    
+    if (!workspace || workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+    
+    // Get env_vars from database (stored as JSON string)
+    const envVars = workspace.env_vars ? JSON.parse(workspace.env_vars) : {};
+    
+    res.json({ envVars });
+  } catch (error) {
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error fetching workspace environment variables');
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update workspace environment variables
+app.put('/api/workspaces/:id/env-vars', ensureAuthenticatedAPI, async (req, res) => {
+  const userLogger = createUserLogger(req.user.username);
+  
+  try {
+    const { envVars } = req.body;
+    const workspace = db.getWorkspace(req.params.id);
+    
+    if (!workspace || workspace.user_id !== req.user.id) {
+      userLogger.warn({ workspaceId: req.params.id }, 'Workspace not found or access denied');
+      return res.status(404).json({ error: 'Workspace not found' });
+    }
+    
+    // Update env_vars in database (store as JSON string)
+    db.updateWorkspaceEnvVars(req.params.id, JSON.stringify(envVars || {}));
+    
+    userLogger.info({ workspace: workspace.name, envVarsCount: Object.keys(envVars || {}).length }, 'Updated workspace environment variables');
+    
+    res.json({ success: true });
+  } catch (error) {
+    userLogger.error({ error: error.message, stack: error.stack }, 'Error updating workspace environment variables');
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Rebuild workspace
 app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res) => {
   const userLogger = createUserLogger(req.user.username);
@@ -823,11 +870,14 @@ app.post('/api/workspaces/:id/rebuild', ensureAuthenticatedAPI, async (req, res)
           }
         }
         
+        // Get stored environment variables
+        const envVars = workspace.env_vars ? JSON.parse(workspace.env_vars) : {};
+        
         // Rebuild workspace (workspace directory already exists, just rebuild container)
         const newWorkspace = await workspaceManager.buildWorkspace(
           req.user.username,
           workspace.name,
-          {}, // envVars - TODO: store and reuse
+          envVars,
           req.params.id
         );
         

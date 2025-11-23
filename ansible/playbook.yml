@@ -9,6 +9,8 @@
     # Terraform環境変数から取得(TF_VAR_*)
     dns_zone: "{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
     domain: "ws.{{ lookup('ansible.builtin.env', 'TF_VAR_domain') }}"
+    internal_switch_name: "{{ lookup('ansible.builtin.env', 'TF_VAR_internal_switch_name') }}"
+    internal_nic_ip: "{{ lookup('ansible.builtin.env', 'TF_VAR_internal_nic_ip') }}"
     ws_github_client_id: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_ID') }}"
     ws_github_client_secret: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_SECRET') }}"
     docs_github_client_id: "{{ lookup('ansible.builtin.env', 'DOCS_GITHUB_CLIENT_ID') }}"
@@ -18,7 +20,7 @@
     # 未設定の場合は admin@<domain> をフォールバックとして使用
     email: "{{ lookup('ansible.builtin.env', 'DEPLOYER_EMAIL') | default('admin@' ~ dns_zone) }}"
     # テスト時は true, 本番時は false
-    le_staging: false
+    le_staging: true
     # 変数に応じて URL をセット (前の回答と同じロジック)
     le_server_url: >-
       {{
@@ -115,29 +117,57 @@
         state: started
         enabled: true
 
-    - name: Configure iptables firewall rules (after Docker to preserve DOCKER chain)
-      ansible.builtin.shell: |
-        # Set default policies
-        iptables -P INPUT ACCEPT
-        iptables -P FORWARD DROP
-        iptables -P OUTPUT ACCEPT
+    - name: Get network interface facts
+      ansible.builtin.setup:
+        gather_subset:
+          - network
 
-        # Flush only user chains, preserve Docker chains
-        iptables -F INPUT
-        iptables -F OUTPUT
-        # Do NOT flush FORWARD or delete chains (Docker needs them)
+    - name: Identify primary network interface (with default route)
+      ansible.builtin.set_fact:
+        primary_nic: "{{ ansible_default_ipv4.interface }}"
 
-        # Basic INPUT rules
-        iptables -A INPUT -i lo -j ACCEPT
-        iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-        iptables -A INPUT -p icmp -j ACCEPT
-        iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
-        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
-        iptables -A INPUT -j DROP
+    - name: Identify secondary network interface (if internal_nic_ip is configured)
+      when: internal_nic_ip != ''
+      block:
+        - name: Find secondary interface (eth1 if exists)
+          ansible.builtin.set_fact:
+            secondary_nic: "{{ 'eth1' if 'eth1' in ansible_interfaces else '' }}"
 
-        # Save rules
-        netfilter-persistent save
+        - name: Configure secondary network interface
+          when: secondary_nic != ''
+          ansible.builtin.copy:
+            dest: "/etc/netplan/51-secondary-nic.yaml"
+            content: |
+              network:
+                version: 2
+                ethernets:
+                  {{ secondary_nic }}:
+                    addresses:
+                      - {{ internal_nic_ip }}
+            owner: root
+            group: root
+            mode: '0644'
+          register: netplan_config
+
+        - name: Apply netplan configuration
+          ansible.builtin.command:
+            cmd: netplan apply
+          when: netplan_config.changed
+          changed_when: true
+
+    - name: Deploy iptables rules file
+      ansible.builtin.template:
+        src: templates/iptables-rules.v4.j2
+        dest: /etc/iptables/rules.v4
+        owner: root
+        group: root
+        mode: '0644'
+      register: iptables_rules
+
+    - name: Apply iptables rules if changed
+      ansible.builtin.shell:
+        cmd: iptables-restore /etc/iptables/rules.v4 && systemctl restart docker
+      when: iptables_rules.changed
       changed_when: true
 
     - name: Create codespace group (GID 1000)

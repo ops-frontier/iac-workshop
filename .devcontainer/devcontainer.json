@@ -48,12 +48,15 @@
     "TF_VAR_ssh_public_key": "${localEnv:TF_VAR_SSH_PUBLIC_KEY}${localEnv:TF_VAR_ssh_public_key}",
     "TF_VAR_domain": "${localEnv:TF_VAR_DOMAIN}${localEnv:TF_VAR_domain}",
     "TF_VAR_dns_service_id": "${localEnv:TF_VAR_DNS_SERVICE_ID}${localEnv:TF_VAR_dns_service_id}",
+    "TF_VAR_internal_switch_name": "${localEnv:TF_VAR_INTERNAL_SWITCH_NAME}${localEnv:TF_VAR_internal_switch_name}",
+    "TF_VAR_internal_nic_ip": "${localEnv:TF_VAR_INTERNAL_NIC_IP}${localEnv:TF_VAR_internal_nic_ip}",
     "WS_GITHUB_CLIENT_ID": "${localEnv:WS_GITHUB_CLIENT_ID}",
     "WS_GITHUB_CLIENT_SECRET": "${localEnv:WS_GITHUB_CLIENT_SECRET}",
     "DOCS_GITHUB_CLIENT_ID": "${localEnv:DOCS_GITHUB_CLIENT_ID}",
     "DOCS_GITHUB_CLIENT_SECRET": "${localEnv:DOCS_GITHUB_CLIENT_SECRET}",
     "TARGET_ORGANIZATION": "${localEnv:TARGET_ORGANIZATION}",
-    "DEPLOYER_EMAIL": "${localEnv:DEPLOYER_EMAIL}"
+    "DEPLOYER_EMAIL": "${localEnv:DEPLOYER_EMAIL}",
+    "SSH_PRIVATE_KEY": "${localEnv:SSH_PRIVATE_KEY}"
   },
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached"

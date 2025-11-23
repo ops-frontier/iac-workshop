@@ -73,3 +73,16 @@ variable "server_password" {
   sensitive   = true
   default     = "TempPassword123!"
 }
+
+# Internal network configuration
+variable "internal_switch_name" {
+  description = "Internal switch name for secondary NIC"
+  type        = string
+  default     = ""
+}
+
+variable "internal_nic_ip" {
+  description = "Internal NIC IP address in CIDR format (e.g., 192.168.100.10/24)"
+  type        = string
+  default     = ""
+}
