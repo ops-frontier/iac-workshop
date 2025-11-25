@@ -282,6 +282,8 @@ app.post('/api/workspaces', ensureAuthenticatedAPI, async (req, res) => {
       containerId: null,
       status: 'building'
     });
+
+    db.updateWorkspaceEnvVars(workspaceId, JSON.stringify(envVars || {}));
     
     const workspaceRecord = db.getWorkspace(workspaceId);
     

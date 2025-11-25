@@ -416,12 +416,6 @@
             ) else 'started'
           }}
 
-    - name: Wait for nginx to be ready
-      ansible.builtin.wait_for:
-        port: 80
-        delay: 5
-        timeout: 60
-
     - name: Copy certificate renewal script
       ansible.builtin.copy:
         src: files/renew-cert.sh
@@ -449,7 +443,7 @@
     - name: Wait for application to be ready
       ansible.builtin.wait_for:
         port: 443
-        delay: 10
+        delay: 3
         timeout: 60
 
     - name: Display service information

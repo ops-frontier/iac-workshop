@@ -1025,10 +1025,6 @@ async function stopWorkspace(containerId) {
   stopLogger.info('Workspace stopped successfully');
 }
 
-function generatePassword() {
-  return Math.random().toString(36).slice(-12);
-}
-
 // Build workspace (for rebuild - workspace directory already exists)
 async function buildWorkspace(username, workspaceName, envVars = {}, workspaceId = null) {
   const buildLogger = createActionLogger(username, workspaceName, 'rebuild-workspace');
