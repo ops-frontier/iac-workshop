@@ -13,14 +13,6 @@
 - code-serverによるブラウザベースのVS Code環境
 - devcontainer.jsonのサポート
 - 組織ベースのアクセス制御
-
-### ドキュメントサイト機能 (docs.yourdomain.com)
-- GitHub Pagesからの自動デプロイ
-- GitHub OAuth認証による更新機能
-- `${TARGET_ORGANIZATION}/docusaurus`リポジトリのgh-pagesブランチを公開
-- https://docs.yourdomain.com/.renew でドキュメント更新
-
-### 共通機能
 - Let's EncryptによるSSL/TLS証明書の自動取得・更新
 - Nginx + Node.js + SQLite3によるWebサービス
 - さくらのクラウドDNSとの統合
@@ -65,24 +57,15 @@
 
 ### GitHub OAuth App
 
-GitHubで2つのOAuth Appを作成してください：
+GitHubでOAuth Appを作成してください：
 
-#### 1. Workspaces用 (ws.your-domain.com)
+#### Workspaces用 (ws.your-domain.com)
 
 1. GitHub Settings → Developer settings → OAuth Apps → New OAuth App
 2. 以下の情報を設定：
    - Application name: `Workspaces`
    - Homepage URL: `https://ws.your-domain.com`
    - Authorization callback URL: `https://ws.your-domain.com/auth/github/callback`
-3. Client IDとClient Secretを控えておく
-
-#### 2. Docs用 (docs.your-domain.com)
-
-1. GitHub Settings → Developer settings → OAuth Apps → New OAuth App
-2. 以下の情報を設定：
-   - Application name: `Docs`
-   - Homepage URL: `https://docs.your-domain.com`
-   - Authorization callback URL: `https://docs.your-domain.com/auth/github/callback`
 3. Client IDとClient Secretを控えておく
 
 ### アクセス制御（TARGET_ORGANIZATION）
@@ -102,8 +85,8 @@ GitHubで2つのOAuth Appを作成してください：
 ### 1. リポジトリをClone
 
 ```bash
-git clone https://github.com/your-username/work-spaces-sakura.git
-cd work-spaces-sakura
+git clone https://github.com/your-username/iac-workshop.git
+cd iac-workshop
 ```
 
 ### 2. GitHub CodeSpacesまたはDev Containerで開く
@@ -129,8 +112,6 @@ TF_VAR_INTERNAL_SWITCH_NAME=<内部スイッチ名（オプション）>
 TF_VAR_INTERNAL_NIC_IP=<内部NICのIPアドレス CIDR形式（オプション、例: 192.168.100.10/24）>
 WS_GITHUB_CLIENT_ID=<Workspaces用 GitHub OAuth AppのClient ID>
 WS_GITHUB_CLIENT_SECRET=<Workspaces用 GitHub OAuth AppのClient Secret>
-DOCS_GITHUB_CLIENT_ID=<Docs用 GitHub OAuth AppのClient ID>
-DOCS_GITHUB_CLIENT_SECRET=<Docs用 GitHub OAuth AppのClient Secret>
 TARGET_ORGANIZATION=<アクセスを許可するGitHub組織名>
 DEPLOYER_EMAIL=<SSL証明書の期限切れ警告メールを受け取るメールアドレス>
 ```
@@ -166,10 +147,6 @@ export TF_VAR_internal_nic_ip="192.168.100.10/24"
 # GitHub OAuth - Workspaces用
 export WS_GITHUB_CLIENT_ID="your-ws-github-client-id"
 export WS_GITHUB_CLIENT_SECRET="your-ws-github-client-secret"
-
-# GitHub OAuth - Docs用
-export DOCS_GITHUB_CLIENT_ID="your-docs-github-client-id"
-export DOCS_GITHUB_CLIENT_SECRET="your-docs-github-client-secret"
 
 # アクセスを許可するGitHub組織名
 export TARGET_ORGANIZATION="your-github-org"

@@ -65,7 +65,7 @@ function configureGitHubAuth(options) {
         const isMember = userOrgs.some(org => org.login === targetOrganization);
         
         if (!isMember) {
-          logger.warn({ ...logContext, organization: targetOrganization }, 'User is not a member of the required organization');
+          logger.warn({ ...logContext, organization: targetOrganization, userOrgs }, 'User is not a member of the required organization');
           return done(null, false, { 
             message: `ユーザー ${profile.username} は組織 ${targetOrganization} に所属していません` 
           });

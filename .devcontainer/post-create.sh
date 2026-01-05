@@ -8,7 +8,7 @@ echo "Installing Ansible..."
 pip install --user ansible ansible-lint
 
 echo "Installing Ansible collections..."
-cd /workspaces/work-spaces-sakura/ansible
+cd /workspaces/iac-workshop/ansible
 ansible-galaxy collection install -r requirements.yml
 cd -
 

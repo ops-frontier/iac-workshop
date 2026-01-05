@@ -10,12 +10,10 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:rw
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/www/certbot:/var/www/certbot:ro
-      - /var/docs:/var/docs:ro
       - /usr/share/nginx/html:/usr/share/nginx/html:ro
       - nginx-cache:/var/cache/nginx
     depends_on:
       - app
-      - docs-renew
     restart: unless-stopped
     networks:
       - internal
@@ -34,21 +32,6 @@ services:
       - ./nginx/conf.d:/opt/nginx-config:rw
     restart: unless-stopped
     stop_grace_period: 20s
-    networks:
-      - internal
-
-  docs-renew:
-    build:
-      context: .
-      dockerfile: ./docs-renew/Dockerfile
-    container_name: docs-renew
-    environment:
-      - PORT=3001
-    env_file:
-      - ./app/.env
-    volumes:
-      - /var/docs:/var/docs:rw
-    restart: unless-stopped
     networks:
       - internal
 

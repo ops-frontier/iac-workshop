@@ -68,7 +68,7 @@
   - Docker
 - VS Code拡張機能の自動インストール
 
-### ✅ ドキュメント
+### ✅ ドキュメントファイル
 - README.md: 詳細なセットアップガイド
 - QUICKSTART.md: クイックスタートガイド
 - CONTRIBUTING.md: 貢献ガイド

@@ -47,16 +47,6 @@ check_env_vars() {
         missing=1
     fi
     
-    if [ -z "$DOCS_GITHUB_CLIENT_ID" ]; then
-        echo "❌ DOCS_GITHUB_CLIENT_ID が設定されていません"
-        missing=1
-    fi
-    
-    if [ -z "$DOCS_GITHUB_CLIENT_SECRET" ]; then
-        echo "❌ DOCS_GITHUB_CLIENT_SECRET が設定されていません"
-        missing=1
-    fi
-    
     if [ -z "$TARGET_ORGANIZATION" ]; then
         echo "❌ TARGET_ORGANIZATION が設定されていません"
         missing=1

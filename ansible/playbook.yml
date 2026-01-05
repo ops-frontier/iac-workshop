@@ -13,8 +13,6 @@
     internal_nic_ip: "{{ lookup('ansible.builtin.env', 'TF_VAR_internal_nic_ip') }}"
     ws_github_client_id: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_ID') }}"
     ws_github_client_secret: "{{ lookup('ansible.builtin.env', 'WS_GITHUB_CLIENT_SECRET') }}"
-    docs_github_client_id: "{{ lookup('ansible.builtin.env', 'DOCS_GITHUB_CLIENT_ID') }}"
-    docs_github_client_secret: "{{ lookup('ansible.builtin.env', 'DOCS_GITHUB_CLIENT_SECRET') }}"
     target_organization: "{{ lookup('ansible.builtin.env', 'TARGET_ORGANIZATION') }}"
     # email は優先的に環境変数 DEPLOYER_EMAIL から取得
     # 未設定の場合は admin@<domain> をフォールバックとして使用
@@ -91,7 +89,7 @@
 
     - name: Add Docker repository
       ansible.builtin.apt_repository:
-        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_facts['distribution_release'] }} stable"
         state: present
 
     - name: Install Docker packages
@@ -124,14 +122,18 @@
 
     - name: Identify primary network interface (with default route)
       ansible.builtin.set_fact:
-        primary_nic: "{{ ansible_default_ipv4.interface }}"
+        primary_nic: "{{ ansible_facts['default_ipv4']['interface'] }}"
 
     - name: Identify secondary network interface (if internal_nic_ip is configured)
       when: internal_nic_ip != ''
       block:
         - name: Find secondary interface (eth1 if exists)
           ansible.builtin.set_fact:
-            secondary_nic: "{{ 'eth1' if 'eth1' in ansible_interfaces else '' }}"
+            secondary_nic: "{{ 'eth1' if 'eth1' in ansible_facts['interfaces'] else '' }}"
+
+        - name: Normalize internal_nic_ip to include CIDR prefix
+          ansible.builtin.set_fact:
+            internal_nic_ip_cidr: "{{ internal_nic_ip if '/' in internal_nic_ip else internal_nic_ip ~ '/24' }}"
 
         - name: Configure secondary network interface
           when: secondary_nic != ''
@@ -143,10 +145,10 @@
                 ethernets:
                   {{ secondary_nic }}:
                     addresses:
-                      - {{ internal_nic_ip }}
+                      - {{ internal_nic_ip_cidr }}
             owner: root
             group: root
-            mode: '0644'
+            mode: '0600'
           register: netplan_config
 
         - name: Apply netplan configuration
@@ -228,7 +230,6 @@
         mode: '0644'
       loop:
         - {src: '../app/', dest: '{{ app_dir }}/app/'}
-        - {src: '../docs-renew/', dest: '{{ app_dir }}/docs-renew/'}
         - {src: '../docker/', dest: '{{ app_dir }}/'}
       register: app_files_copy
 
@@ -262,14 +263,6 @@
     - name: Create certbot webroot directory
       ansible.builtin.file:
         path: /var/www/certbot
-        state: directory
-        owner: ubuntu
-        group: ubuntu
-        mode: '0755'
-
-    - name: Create docs directory
-      ansible.builtin.file:
-        path: /var/docs
         state: directory
         owner: ubuntu
         group: ubuntu
@@ -347,13 +340,8 @@
         path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
       register: ssl_cert
 
-    - name: Check if docs SSL certificate already exists
-      ansible.builtin.stat:
-        path: "/etc/letsencrypt/live/docs.{{ dns_zone }}/fullchain.pem"
-      register: docs_ssl_cert
-
     - name: Obtain SSL certificates with certbot (webroot mode)
-      when: not ssl_cert.stat.exists or not docs_ssl_cert.stat.exists
+      when: not ssl_cert.stat.exists
       block:
         - name: Stop workspaces service
           ansible.builtin.systemd:
@@ -367,13 +355,6 @@
               --email {{ email }} -d {{ domain }} --server {{ le_server_url }}
           changed_when: true
 
-        - name: Obtain SSL certificate for docs domain
-          ansible.builtin.command:
-            cmd: >
-              certbot certonly --standalone --non-interactive --agree-tos
-              --email {{ email }} -d docs.{{ dns_zone }} --server {{ le_server_url }}
-          changed_when: true
-
         - name: Modify configuration as webroot mode (renewal conf)
           community.general.ini_file:
             path: /etc/letsencrypt/renewal/{{ item.domain }}.conf
@@ -385,9 +366,6 @@
             - { domain: "{{ domain }}", option: 'authenticator', value: 'webroot' }
             - { domain: "{{ domain }}", option: 'webroot_path', value: '/var/www/certbot' }
             - { domain: "{{ domain }}", option: 'server', value: le_server_url }
-            - { domain: "docs.{{ dns_zone }}", option: 'authenticator', value: 'webroot' }
-            - { domain: "docs.{{ dns_zone }}", option: 'webroot_path', value: '/var/www/certbot' }
-            - { domain: "docs.{{ dns_zone }}", option: 'server', value: le_server_url }
 
         - name: Remove standalone pre/post hooks from renewal configuration
           community.general.ini_file:
@@ -399,8 +377,6 @@
           loop:
             - { domain: "{{ domain }}", option: 'pre_hook' }
             - { domain: "{{ domain }}", option: 'post_hook' }
-            - { domain: "docs.{{ dns_zone }}", option: 'pre_hook' }
-            - { domain: "docs.{{ dns_zone }}", option: 'post_hook' }
 
     - name: Enable and start workspaces service
       ansible.builtin.systemd:
@@ -430,14 +406,6 @@
         minute: "0"
         hour: "3"
         job: "/usr/local/bin/renew-cert.sh {{ domain }} >> /var/log/certbot-renewal.log 2>&1"
-        user: root
-
-    - name: Set up certbot renewal cron job for docs (daily at 3:10 AM)
-      ansible.builtin.cron:
-        name: "Renew Let's Encrypt certificates for docs and reload nginx"
-        minute: "10"
-        hour: "3"
-        job: "/usr/local/bin/renew-cert.sh docs.{{ dns_zone }} >> /var/log/certbot-renewal.log 2>&1"
         user: root
 
     - name: Wait for application to be ready
