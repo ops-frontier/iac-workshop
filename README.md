@@ -1,12 +1,12 @@
-# Workspaces on Sakura Cloud
+# IaC 工房
 
-さくらのクラウド上でGitHub CodeSpaces風のクラウド開発環境を提供するサービスです。
+さくらのクラウド上でGitHub CodeSpaces風の IaC ワークスペースを提供するサービスです。
 
 ## 概要
 
 このプロジェクトは、さくらのクラウド上でGitHub CodeSpacesに似た機能を提供します：
 
-### ワークスペース機能 (ws.yourdomain.com)
+### ワークスペース機能
 - GitHub OAuthによる認証（PKCE & stateパラメータによるセキュリティ強化）
 - ユーザーごとのワークスペース管理
 - GitリポジトリからのワークスペースのClone
@@ -19,27 +19,13 @@
 
 ## アーキテクチャ
 
-```
-┌─────────────────────────────────────────────────┐
-│           Sakura Cloud Server (Ubuntu)          │
-│                                                  │
-│  ┌────────────┐  ┌──────────────────────────┐   │
-│  │   Nginx    │  │  Workspaces App   │   │
-│  │  (Reverse  │──│  (Node.js + Express)     │   │
-│  │   Proxy)   │  │  - GitHub OAuth          │   │
-│  │  + SSL/TLS │  │  - Workspace Management  │   │
-│  └────────────┘  │  - SQLite3 DB            │   │
-│                  └──────────────────────────┘   │
-│                                                  │
-│  ┌──────────────────────────────────────────┐   │
-│  │     Workspace Containers                 │   │
-│  │  ┌────────────┐  ┌────────────┐          │   │
-│  │  │code-server │  │code-server │  ...     │   │
-│  │  │ (VS Code)  │  │ (VS Code)  │          │   │
-│  │  └────────────┘  └────────────┘          │   │
-│  └──────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
-```
+![アーキテクチャ](./network.drawio.svg)
+
+この構成により、保守対象機器の sshd のポート 22 をインターネットに晒すことなくIaCが可能となります。 IaC工房のワークスペースは Github CodeSpaces と同様に利用できますが、以下の制限事項があります。
+
+- code-server は、Microsoftが提供する公式のVS Code Marketplaceではなく、Open VSX Registry を拡張機能のソースとして利用しています。GitHub Copilot Chat などの一部の拡張機能は、ライセンスや利用規約の関係でOpen VSX Registryには公開されていません。
+- code-server の Web UI から devcontainer を再ビルドすることはできません。再ビルドやビルドエラーの確認は IaC 工房のダッシュボードから実行してください。
+- devcontainer.json から Dockerfile や docker-compose.yml を参照してワークスペースコンテナをビルドすることはできません（未検証）。
 
 ## 前提条件
 

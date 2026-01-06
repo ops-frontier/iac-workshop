@@ -760,6 +760,11 @@ location /${username}/workspaces/${workspaceName}/ {
     error_page 502 /workspace-starting.html;
     
     proxy_pass http://${upstreamName}/;
+    # When referencing upstream, proxy_redirect default may not work correctly.
+    # Therefore, we explicitly configure the redirect.
+    proxy_redirect / /${username}/workspaces/${workspaceName}/;
+    # Fallback for cases where the container returns URLs containing a scheme (http)
+    proxy_redirect http://${containerName}:8080/ /${username}/workspaces/${workspaceName}/;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
